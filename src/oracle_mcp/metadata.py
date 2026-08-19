@@ -19,7 +19,7 @@ from typing import Any
 
 from .db import OracleConnection
 from .errors import MetadataUnavailableError
-from .policy import DatabasePolicy, ObjectPolicy, PolicyStore, Role
+from .policy import DatabasePolicy, ObjectPolicy, PolicyStore, Role, sensitivity_rank
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,50 @@ _FOREIGN_KEY_SQL = """
 """
 
 
+_ALL_SCHEMAS_SQL = """
+    SELECT DISTINCT owner
+      FROM all_objects
+     WHERE object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+     ORDER BY owner
+"""
+
+_SCHEMA_OBJECTS_SQL = """
+    SELECT object_name, object_type
+      FROM all_objects
+     WHERE owner = :owner
+       AND object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+     ORDER BY object_name
+"""
+
+_SEARCH_OBJECTS_SQL = """
+    SELECT owner, object_name, object_type
+      FROM all_objects
+     WHERE object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+       AND ({predicate})
+       AND ROWNUM <= :row_limit
+     ORDER BY owner, object_name
+"""
+
+_SEARCH_COLUMNS_SQL = """
+    SELECT owner, table_name, column_name, data_type
+      FROM all_tab_columns
+     WHERE ({predicate})
+       AND ROWNUM <= :row_limit
+     ORDER BY owner, table_name, column_name
+"""
+
+_COLUMN_NAMES_SQL = """
+    SELECT column_name
+      FROM all_tab_columns
+     WHERE owner = :owner AND table_name = :table_name
+     ORDER BY column_id
+"""
+
+# Dictionary reads are capped so a database with a very large catalogue cannot
+# turn a single tool call into an unbounded fetch.
+_MAX_DICTIONARY_ROWS = 5000
+
+
 def _safe_identifier(value: str, label: str) -> str:
     """Guard the dictionary queries themselves against injection via bind values."""
     candidate = (value or "").strip().upper()
@@ -117,11 +161,119 @@ class _CacheEntry:
     expires_at: float
 
 
+class DataDictionary:
+    """Data-dictionary reads for policies that discover rather than declare.
+
+    Backs wildcard-schema databases and allowlisted objects with no declared
+    column list. Everything it returns is filtered by Oracle itself through the
+    ``ALL_*`` views, so it can only ever report what the chatbot's own read-only
+    account has been granted.
+
+    Failures return empty rather than raising. An empty result means "not found",
+    which the policy layer turns into a denial, so a dictionary outage fails
+    closed instead of opening access.
+    """
+
+    def __init__(self, registry: Any) -> None:
+        self.registry = registry
+        self._cache: dict[tuple[str, ...], _CacheEntry] = {}
+
+    def clear_cache(self) -> None:
+        self._cache.clear()
+
+    def _cached(self, key: tuple[str, ...], producer: Any) -> Any:
+        now = time.monotonic()
+        hit = self._cache.get(key)
+        if hit is not None and hit.expires_at > now:
+            return hit.value
+        value = producer()
+        self._cache[key] = _CacheEntry(value, now + _CACHE_TTL_SECONDS)
+        return value
+
+    def _fetch(self, database: str, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            connection = self.registry.get(database)
+        except Exception as exc:  # noqa: BLE001 - unavailable DB must not open access
+            logger.warning("Dictionary lookup on %s unavailable: %s", database, type(exc).__name__)
+            return []
+        try:
+            _, rows, _, _ = connection.fetch(sql, params, max_rows=_MAX_DICTIONARY_ROWS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dictionary query on %s failed: %s", database, type(exc).__name__)
+            return []
+        return rows
+
+    def list_schemas(self, database: str) -> tuple[str, ...]:
+        def _load() -> tuple[str, ...]:
+            rows = self._fetch(database, _ALL_SCHEMAS_SQL, {})
+            return tuple(str(r["OWNER"]).upper() for r in rows if r.get("OWNER"))
+
+        return self._cached(("schemas", database), _load)
+
+    def list_objects(self, database: str, schema: str) -> tuple[tuple[str, str], ...]:
+        owner = (schema or "").strip().upper()
+        if not _IDENTIFIER.match(owner):
+            return ()
+
+        def _load() -> tuple[tuple[str, str], ...]:
+            rows = self._fetch(database, _SCHEMA_OBJECTS_SQL, {"owner": owner})
+            return tuple(
+                (str(r["OBJECT_NAME"]).upper(), str(r.get("OBJECT_TYPE") or "TABLE").upper())
+                for r in rows
+                if r.get("OBJECT_NAME")
+            )
+
+        return self._cached(("objects", database, owner), _load)
+
+    def _search(
+        self,
+        database: str,
+        sql_template: str,
+        column_expr: str,
+        terms: list[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Term search pushed into the dictionary rather than enumerated in Python.
+
+        A wildcard database may hold thousands of objects, so matching them one
+        schema at a time would mean a dictionary round trip per schema. The terms
+        are bound, never interpolated; only the number of placeholders varies, and
+        ``column_expr`` is a server-owned literal rather than caller input.
+        """
+        if not terms:
+            return []
+        binds = {f"t{i}": f"%{term.lower()}%" for i, term in enumerate(terms[:5])}
+        predicate = " OR ".join(f"LOWER({column_expr}) LIKE :{name}" for name in binds)
+        sql = sql_template.replace("{predicate}", predicate)
+        return self._fetch(database, sql, {**binds, "row_limit": int(limit)})
+
+    def search_objects(self, database: str, terms: list[str], limit: int) -> list[dict[str, Any]]:
+        return self._search(database, _SEARCH_OBJECTS_SQL, "object_name", terms, limit)
+
+    def search_columns(self, database: str, terms: list[str], limit: int) -> list[dict[str, Any]]:
+        return self._search(database, _SEARCH_COLUMNS_SQL, "column_name", terms, limit)
+
+    def list_columns(self, database: str, schema: str, object_name: str) -> tuple[str, ...]:
+        owner = (schema or "").strip().upper()
+        table = (object_name or "").strip().upper()
+        if not _IDENTIFIER.match(owner) or not _IDENTIFIER.match(table):
+            return ()
+
+        def _load() -> tuple[str, ...]:
+            rows = self._fetch(
+                database, _COLUMN_NAMES_SQL, {"owner": owner, "table_name": table}
+            )
+            return tuple(str(r["COLUMN_NAME"]).upper() for r in rows if r.get("COLUMN_NAME"))
+
+        return self._cached(("columns", database, owner, table), _load)
+
+
 class MetadataService:
     """Reads live metadata and merges it with the business descriptions in policy."""
 
-    def __init__(self, store: PolicyStore) -> None:
+    def __init__(self, store: PolicyStore, dictionary: DataDictionary | None = None) -> None:
         self.store = store
+        self.dictionary = dictionary
         self._cache: dict[tuple[str, ...], _CacheEntry] = {}
 
     def _cached(self, key: tuple[str, ...], producer: Any) -> Any:
@@ -153,12 +305,25 @@ class MetadataService:
                     "schema_name": s.name,
                     "description": s.description,
                     "business_domain": s.business_domain,
-                    "approved_object_count": len(
-                        [o for o in s.objects if o.rank <= role.clearance_rank]
+                    # Counting objects in a discovered schema means a dictionary
+                    # scan per schema, so it is deferred to list_allowed_tables.
+                    "approved_object_count": (
+                        len([o for o in s.objects if o.rank <= role.clearance_rank])
+                        if s.objects or not policy.allow_all_schemas
+                        else None
                     ),
                 }
                 for s in schemas
             ],
+            "notes": (
+                [
+                    "This database exposes every schema the read-only account can read; "
+                    "the database grant is the effective allowlist.",
+                    "Call list_allowed_tables for a schema to see its objects.",
+                ]
+                if policy.allow_all_schemas
+                else []
+            ),
         }
 
     # ---- objects -----------------------------------------------------------
@@ -172,20 +337,30 @@ class MetadataService:
     ) -> dict[str, Any]:
         policy = self.store.database(database_name)
         schema = policy.schema(schema_name)
-        if schema is None or not role.can_see_schema(policy.database, schema_name):
+        target = (schema_name or "").strip().upper()
+        allowed = role.can_see_schema(policy.database, target) and not policy.is_excluded_schema(
+            target
+        )
+        if not allowed or (schema is None and not policy.allow_all_schemas):
             raise MetadataUnavailableError(
-                f"Schema {schema_name.upper()} is not approved for role '{role.name}' on "
+                f"Schema {target} is not approved for role '{role.name}' on "
                 f"{policy.display_name}.",
                 next_steps=["Call list_allowed_schemas to see what your role can access."],
             )
 
-        visible = [o for o in schema.objects if o.rank <= role.clearance_rank]
-        estimates = self._row_estimates(connection, schema.name, visible)
+        visible = self.store.allowed_objects(database_name, role, schema=target)
+        if not visible and schema is None:
+            raise MetadataUnavailableError(
+                f"Schema {target} holds no objects readable by this connection on "
+                f"{policy.display_name}.",
+                next_steps=["Call list_allowed_schemas to see what your role can access."],
+            )
+        estimates = self._row_estimates(connection, target, visible)
 
         return {
             "database": policy.database,
-            "schema_name": schema.name,
-            "schema_description": schema.description,
+            "schema_name": target,
+            "schema_description": schema.description if schema else "Discovered schema.",
             "user_role": role.name,
             "object_count": len(visible),
             "objects": [
@@ -196,7 +371,13 @@ class MetadataService:
                     "table_description": obj.description,
                     "business_domain": obj.business_domain,
                     "data_sensitivity": obj.sensitivity,
-                    "approved_column_count": len(obj.columns_visible_to(role.clearance_rank)),
+                    # Resolving this for an undeclared object costs a dictionary
+                    # round trip each; get_table_metadata reports it instead.
+                    "approved_column_count": (
+                        len(obj.columns_visible_to(role.clearance_rank))
+                        if obj.columns_declared
+                        else None
+                    ),
                     "estimated_row_count": estimates.get(obj.name),
                     "large_table": obj.large_table,
                     "filter_required": obj.require_filter,
@@ -256,7 +437,7 @@ class MetadataService:
 
         columns: list[dict[str, Any]] = []
         restricted: list[str] = []
-        for col in obj.columns:
+        for col in self.store.columns_for(database_name, obj):
             if col.rank > clearance:
                 restricted.append(col.name)
                 continue
@@ -370,6 +551,87 @@ class MetadataService:
 
     # ---- search ------------------------------------------------------------
 
+    def _search_dictionary(
+        self,
+        policy: DatabasePolicy,
+        terms: list[str],
+        search_text: str,
+        role: Role,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Search a wildcard database straight through the data dictionary.
+
+        Column sensitivity is inferred from the masking rules, because a
+        discovered column has no hand-assigned classification. Columns the role
+        cannot clear are dropped from the results rather than listed, so the
+        search itself does not disclose that a restricted column exists.
+        """
+        if self.dictionary is None:
+            raise MetadataUnavailableError(
+                f"{policy.display_name} requires data-dictionary search, which is "
+                "not available on this server.",
+                next_steps=["Retry once the database connection is restored."],
+            )
+
+        def _visible(owner: str) -> bool:
+            return role.can_see_schema(policy.database, owner) and not policy.is_excluded_schema(
+                owner
+            )
+
+        table_hits = [
+            {
+                "qualified_name": f"{r['OWNER']}.{r['OBJECT_NAME']}",
+                "schema_name": r["OWNER"],
+                "table_name": r["OBJECT_NAME"],
+                "object_type": r.get("OBJECT_TYPE", "TABLE"),
+                "business_description": "",
+                "business_domain": r["OWNER"],
+                "data_sensitivity": "INTERNAL",
+                "confidence_score": round(_score(terms, str(r["OBJECT_NAME"]), "", ""), 3),
+            }
+            for r in self.dictionary.search_objects(policy.database, terms, limit * 4)
+            if _visible(str(r.get("OWNER", "")))
+        ]
+
+        column_hits = []
+        for r in self.dictionary.search_columns(policy.database, terms, limit * 4):
+            owner = str(r.get("OWNER", ""))
+            if not _visible(owner):
+                continue
+            column_name = str(r["COLUMN_NAME"])
+            sensitivity = self.store.infer_column_sensitivity(column_name)
+            if sensitivity_rank(sensitivity) > role.clearance_rank:
+                continue
+            column_hits.append(
+                {
+                    "qualified_name": f"{owner}.{r['TABLE_NAME']}.{column_name}",
+                    "schema_name": owner,
+                    "table_name": r["TABLE_NAME"],
+                    "column_name": column_name,
+                    "business_description": "",
+                    "data_sensitivity": sensitivity,
+                    "confidence_score": round(_score(terms, column_name, "", ""), 3),
+                }
+            )
+
+        table_hits.sort(key=lambda h: (-h["confidence_score"], h["qualified_name"]))
+        column_hits.sort(key=lambda h: (-h["confidence_score"], h["qualified_name"]))
+
+        return {
+            "database": policy.database,
+            "search_text": search_text,
+            "user_role": role.name,
+            "matching_tables": table_hits[:limit],
+            "matching_columns": column_hits[:limit],
+            "match_count": len(table_hits) + len(column_hits),
+            "notes": [
+                "Matched on object and column names in the data dictionary; this "
+                "database has no curated business descriptions.",
+                "Sensitivity is inferred from column naming rules, not a data steward's "
+                "classification, so confirm before sharing results widely.",
+            ],
+        }
+
     def search(
         self, database_name: str, search_text: str, role: Role, limit: int = 25
     ) -> dict[str, Any]:
@@ -383,6 +645,9 @@ class MetadataService:
 
         table_hits: list[dict[str, Any]] = []
         column_hits: list[dict[str, Any]] = []
+
+        if policy.allow_all_schemas:
+            return self._search_dictionary(policy, terms, search_text, role, limit)
 
         for obj in self.store.allowed_objects(database_name, role):
             table_score = _score(terms, obj.name, obj.description, obj.business_domain)

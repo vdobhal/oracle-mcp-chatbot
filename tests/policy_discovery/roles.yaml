@@ -1,0 +1,46 @@
+# Fixture roles for discovery mode: On-Prem scoped to the named EIM schema,
+# ATP opened up with the "*" wildcard, mirroring the deployed roles.yaml.
+sensitivity_levels:
+  - PUBLIC
+  - INTERNAL
+  - CONFIDENTIAL
+  - RESTRICTED
+
+roles:
+  business_user:
+    description: Lowest clearance; used to prove restricted columns are refused.
+    clearance: INTERNAL
+    max_rows: 200
+    allow_raw_sql: false
+    show_sql: false
+    allow_cartesian: false
+    allow_reconciliation: false
+    schemas:
+      ONPREM: [EIM]
+      ATP: ["*"]
+
+  analyst:
+    description: Mid clearance; sees CONFIDENTIAL but not RESTRICTED.
+    clearance: CONFIDENTIAL
+    max_rows: 500
+    allow_raw_sql: false
+    show_sql: true
+    allow_cartesian: false
+    allow_reconciliation: true
+    schemas:
+      ONPREM: [EIM]
+      ATP: ["*"]
+
+  admin:
+    description: Highest clearance; still passes the full guardrail chain.
+    clearance: RESTRICTED
+    max_rows: 500
+    allow_raw_sql: true
+    show_sql: true
+    allow_cartesian: true
+    allow_reconciliation: true
+    schemas:
+      ONPREM: [EIM]
+      ATP: ["*"]
+
+default_role: business_user

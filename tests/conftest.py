@@ -23,12 +23,30 @@ from oracle_mcp.settings import OracleProfile, Settings  # noqa: E402
 from oracle_mcp.sql_guard import SqlGuard  # noqa: E402
 from oracle_mcp.tools import ToolService  # noqa: E402
 
-POLICY_DIR = ROOT / "config" / "policy"
+# Tests run against their own fixture policy, not the deployed allowlist in
+# config/policy. Asserting on real allowlists would mean every governance change
+# breaks the suite, and would make the tests describe one environment's contents
+# rather than the behaviour of the access model itself.
+POLICY_DIR = ROOT / "tests" / "policy"
+DISCOVERY_POLICY_DIR = ROOT / "tests" / "policy_discovery"
+DEPLOYED_POLICY_DIR = ROOT / "config" / "policy"
 
 
 @pytest.fixture(scope="session")
 def policy_dir() -> Path:
+    """Fully declared allowlist: named objects with named, classified columns."""
     return POLICY_DIR
+
+
+@pytest.fixture(scope="session")
+def discovery_policy_dir() -> Path:
+    """Allowlist that leans on the data dictionary, as the deployment does."""
+    return DISCOVERY_POLICY_DIR
+
+
+@pytest.fixture(scope="session")
+def deployed_policy_dir() -> Path:
+    return DEPLOYED_POLICY_DIR
 
 
 @pytest.fixture

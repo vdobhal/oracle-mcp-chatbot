@@ -16,7 +16,7 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Protocol
 
 import yaml
 
@@ -78,6 +78,16 @@ class ObjectPolicy:
     def rank(self) -> int:
         return sensitivity_rank(self.sensitivity)
 
+    @property
+    def columns_declared(self) -> bool:
+        """False when the policy file allowlists the object but not its columns.
+
+        Such an object takes its column list from the data dictionary at query
+        time. Use ``PolicyStore.columns_for`` rather than ``.columns`` anywhere
+        the full list matters, otherwise these objects look like they have none.
+        """
+        return bool(self.columns)
+
     def column(self, name: str) -> ColumnPolicy | None:
         target = name.strip().upper()
         for col in self.columns:
@@ -123,8 +133,30 @@ class Role:
     def schemas_for(self, database: str) -> tuple[str, ...]:
         return self.schemas.get(database.upper(), ())
 
+    def has_wildcard_schemas(self, database: str) -> bool:
+        return "*" in self.schemas_for(database)
+
     def can_see_schema(self, database: str, schema: str) -> bool:
-        return schema.strip().upper() in {s.upper() for s in self.schemas_for(database)}
+        allowed = self.schemas_for(database)
+        if "*" in allowed:
+            return True
+        return schema.strip().upper() in {s.upper() for s in allowed}
+
+
+# Oracle ships these; none of them hold business data, and several are a direct
+# route to credential hashes or audit tampering. Excluded from wildcard discovery
+# regardless of what the connected account happens to have been granted.
+ORACLE_INTERNAL_SCHEMAS: frozenset[str] = frozenset(
+    {
+        "SYS", "SYSTEM", "SYSAUX", "AUDSYS", "SYSBACKUP", "SYSDG", "SYSKM", "SYSRAC",
+        "OUTLN", "DBSNMP", "APPQOSSYS", "GSMADMIN_INTERNAL", "GSMCATUSER", "GSMUSER",
+        "XDB", "WMSYS", "CTXSYS", "MDSYS", "ORDSYS", "ORDDATA", "ORDPLUGINS", "SI_INFORMTN_SCHEMA",
+        "OLAPSYS", "OJVMSYS", "DVSYS", "DVF", "LBACSYS", "DBSFWUSER", "REMOTE_SCHEDULER_AGENT",
+        "ANONYMOUS", "XS$NULL", "SPATIAL_CSW_ADMIN_USR", "SPATIAL_WFS_ADMIN_USR",
+        "FLOWS_FILES", "APEX_PUBLIC_USER", "ORACLE_OCM", "PDBADMIN", "GGSYS",
+        "DBSNMP_ADMIN", "C##CLOUD$SERVICE", "ADB_MONITOR", "DGPDB_INT",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -134,6 +166,8 @@ class DatabasePolicy:
     description: str
     default_schema: str
     schemas: tuple[SchemaPolicy, ...]
+    allow_all_schemas: bool = False
+    excluded_schemas: frozenset[str] = ORACLE_INTERNAL_SCHEMAS
 
     def schema(self, name: str) -> SchemaPolicy | None:
         target = name.strip().upper()
@@ -141,6 +175,11 @@ class DatabasePolicy:
             if sch.name.upper() == target:
                 return sch
         return None
+
+    def is_excluded_schema(self, name: str) -> bool:
+        upper = (name or "").strip().upper()
+        # C## prefixes are common-user containers in a CDB; never business data.
+        return upper in self.excluded_schemas or upper.startswith("C##")
 
     def resolve_object(self, schema: str | None, name: str) -> ObjectPolicy | None:
         sch = self.schema(schema or self.default_schema)
@@ -196,12 +235,19 @@ def load_database_policy(path: Path) -> DatabasePolicy:
                 objects=tuple(objects),
             )
         )
+    excluded = raw.get("excluded_schemas")
     return DatabasePolicy(
         database=str(raw.get("database", "")).upper(),
         display_name=str(raw.get("display_name", raw.get("database", ""))),
         description=str(raw.get("description", "")),
         default_schema=str(raw.get("default_schema", "")).upper(),
         schemas=tuple(schemas),
+        allow_all_schemas=bool(raw.get("allow_all_schemas", False)),
+        excluded_schemas=(
+            ORACLE_INTERNAL_SCHEMAS | {str(s).upper() for s in excluded}
+            if excluded
+            else ORACLE_INTERNAL_SCHEMAS
+        ),
     )
 
 
@@ -231,6 +277,23 @@ def load_roles(path: Path) -> tuple[dict[str, Role], str]:
     return roles, default_role
 
 
+class DictionaryResolver(Protocol):
+    """Live data-dictionary lookups, supplied by the metadata service.
+
+    Kept as a protocol rather than an import so this module stays free of any
+    database dependency; the wiring happens in the service layer.
+    """
+
+    def list_schemas(self, database: str) -> tuple[str, ...]:
+        ...
+
+    def list_objects(self, database: str, schema: str) -> tuple[tuple[str, str], ...]:
+        """Return ``(object_name, object_type)`` pairs the account can read."""
+
+    def list_columns(self, database: str, schema: str, object_name: str) -> tuple[str, ...]:
+        ...
+
+
 class PolicyStore:
     """Loaded policy for every database this process serves, plus the role model."""
 
@@ -242,6 +305,57 @@ class PolicyStore:
         for database_name, filename in policy_files.items():
             policy = load_database_policy(self.policy_dir / filename)
             self.databases[database_name.upper()] = policy
+        self._resolver: DictionaryResolver | None = None
+        self._infer_sensitivity: Callable[[str], str] = lambda _name: "INTERNAL"
+
+    def bind_dictionary(
+        self,
+        resolver: DictionaryResolver,
+        sensitivity_inferrer: Callable[[str], str] | None = None,
+    ) -> None:
+        """Attach live discovery, used by wildcard schemas and undeclared columns.
+
+        ``sensitivity_inferrer`` classifies a discovered column by name. It is
+        injected rather than imported because the masking module depends on this
+        one. Leaving it unset means every discovered column lands at INTERNAL,
+        which would quietly disable the clearance check on those columns.
+        """
+        self._resolver = resolver
+        if sensitivity_inferrer is not None:
+            self._infer_sensitivity = sensitivity_inferrer
+
+    @property
+    def has_dictionary(self) -> bool:
+        return self._resolver is not None
+
+    def infer_column_sensitivity(self, column_name: str) -> str:
+        return self._infer_sensitivity(column_name.upper())
+
+    def _require_resolver(self, policy: DatabasePolicy) -> DictionaryResolver:
+        if self._resolver is None:
+            raise ConfigurationError(
+                f"{policy.display_name} relies on live data-dictionary discovery, "
+                "but no dictionary resolver is bound to the policy store."
+            )
+        return self._resolver
+
+    # ---- discovery ---------------------------------------------------------
+
+    def columns_for(self, database_name: str, obj: ObjectPolicy) -> tuple[ColumnPolicy, ...]:
+        """The object's columns, declared in policy or discovered in the database."""
+        if obj.columns_declared:
+            return obj.columns
+        policy = self.database(database_name)
+        resolver = self._require_resolver(policy)
+        names = resolver.list_columns(policy.database, obj.schema, obj.name)
+        return tuple(
+            ColumnPolicy(
+                name=name.upper(),
+                description="",
+                sensitivity=self._infer_sensitivity(name.upper()),
+            )
+            for name in names
+        )
 
     # ---- lookups -----------------------------------------------------------
 
@@ -280,6 +394,8 @@ class PolicyStore:
         policy = self.database(database_name)
         schema_name = (schema or policy.default_schema).strip().upper()
         obj = policy.resolve_object(schema_name, object_name)
+        if obj is None and policy.allow_all_schemas:
+            obj = self._discover_object(policy, schema_name, object_name)
         if obj is None:
             raise ObjectNotAllowlistedError(
                 f"{schema_name}.{object_name.upper()} is not an approved object on "
@@ -305,6 +421,41 @@ class PolicyStore:
             )
         return obj
 
+    def _discover_object(
+        self, policy: DatabasePolicy, schema_name: str, object_name: str
+    ) -> ObjectPolicy | None:
+        """Build an object policy for a database running in wildcard mode.
+
+        Existence is decided by the data dictionary as seen through the chatbot's
+        own account, so an object the account was never granted simply is not
+        found. That makes the database grant the effective allowlist, which is why
+        wildcard mode is only defensible against a genuinely read-only account.
+        """
+        if policy.is_excluded_schema(schema_name):
+            return None
+        resolver = self._require_resolver(policy)
+        target = object_name.strip().upper()
+        for name, object_type in resolver.list_objects(policy.database, schema_name):
+            if name.upper() == target:
+                return ObjectPolicy(
+                    schema=schema_name,
+                    name=target,
+                    object_type=object_type.upper() or "TABLE",
+                    description="Discovered from the data dictionary.",
+                    business_domain=schema_name,
+                    sensitivity="INTERNAL",
+                    require_filter=False,
+                    columns=(),
+                )
+        return None
+
+    def columns_visible_to(
+        self, database_name: str, obj: ObjectPolicy, clearance_rank: int
+    ) -> tuple[ColumnPolicy, ...]:
+        return tuple(
+            c for c in self.columns_for(database_name, obj) if c.rank <= clearance_rank
+        )
+
     def authorize_column(self, obj: ObjectPolicy, column_name: str, role: Role) -> ColumnPolicy:
         col = obj.column(column_name)
         if col is None:
@@ -325,15 +476,63 @@ class PolicyStore:
 
     def allowed_schemas(self, database_name: str, role: Role) -> list[SchemaPolicy]:
         policy = self.database(database_name)
-        return [s for s in policy.schemas if role.can_see_schema(policy.database, s.name)]
-
-    def allowed_objects(self, database_name: str, role: Role) -> list[ObjectPolicy]:
-        policy = self.database(database_name)
+        declared = {s.name.upper(): s for s in policy.schemas}
+        if policy.allow_all_schemas:
+            resolver = self._require_resolver(policy)
+            for name in resolver.list_schemas(policy.database):
+                upper = name.upper()
+                if policy.is_excluded_schema(upper) or upper in declared:
+                    continue
+                declared[upper] = SchemaPolicy(
+                    name=upper,
+                    description="Discovered from the data dictionary.",
+                    business_domain=upper,
+                    objects=(),
+                )
         return [
-            obj
+            declared[name]
+            for name in sorted(declared)
+            if role.can_see_schema(policy.database, name)
+        ]
+
+    def allowed_objects(
+        self, database_name: str, role: Role, schema: str | None = None
+    ) -> list[ObjectPolicy]:
+        policy = self.database(database_name)
+        wanted = schema.strip().upper() if schema else None
+        objects = {
+            obj.fqn: obj
             for obj in policy.iter_objects()
-            if role.can_see_schema(policy.database, obj.schema)
-            and obj.rank <= role.clearance_rank
+            if wanted is None or obj.schema == wanted
+        }
+        if policy.allow_all_schemas:
+            # Enumerating every object in every schema would be an unbounded
+            # dictionary scan, so wildcard listing is scoped to one schema.
+            targets = (
+                [wanted]
+                if wanted
+                else [s.name for s in self.allowed_schemas(database_name, role)]
+            )
+            resolver = self._require_resolver(policy)
+            for schema_name in targets:
+                if policy.is_excluded_schema(schema_name):
+                    continue
+                for name, object_type in resolver.list_objects(policy.database, schema_name):
+                    fqn = f"{schema_name}.{name.upper()}"
+                    if fqn in objects:
+                        continue
+                    objects[fqn] = ObjectPolicy(
+                        schema=schema_name,
+                        name=name.upper(),
+                        object_type=object_type.upper() or "TABLE",
+                        description="Discovered from the data dictionary.",
+                        business_domain=schema_name,
+                    )
+        return [
+            objects[fqn]
+            for fqn in sorted(objects)
+            if role.can_see_schema(policy.database, objects[fqn].schema)
+            and objects[fqn].rank <= role.clearance_rank
         ]
 
     def effective_max_rows(self, role: Role, server_max_rows: int) -> int:

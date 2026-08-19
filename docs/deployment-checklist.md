@@ -8,7 +8,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 cp .env.example .env          # fill in credentials
-pytest                        # 148 tests, no database needed
+pytest                        # 164 tests, no database needed
 
 python -m oracle_mcp.server --profile onprem --check    # connectivity
 python -m oracle_mcp.server --profile onprem            # stdio server

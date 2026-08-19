@@ -92,6 +92,42 @@ Data reaches a user only by crossing all five layers.
 Plus two runtime controls: `SET TRANSACTION READ ONLY` per transaction, and
 `connection.call_timeout` so a slow query is cancelled in the database.
 
+### Layer 2 has two modes, and they are not equally strong
+
+A database policy file either names its objects or delegates to the grant.
+
+**Strict** is the default and the stronger of the two. `config/policy/onprem.yaml`
+names each reachable object; anything else is refused no matter what the account
+was granted. Adding an object is a governance decision that goes through review.
+
+**Wildcard** is opted into with `allow_all_schemas: true`, as
+`config/policy/atp.yaml` does. Every schema the account can read becomes
+reachable, discovered live from `ALL_OBJECTS`. This gives up layer 2: the
+question of which objects exist is answered by the database grant. Layers 1, 3,
+4 and 5 still apply in full, but there is no longer an independent record that an
+object was *approved* for chatbot use rather than merely readable. Only use it
+against an account that is genuinely read-only and scoped to reporting data.
+
+Oracle's own schemas (`SYS`, `SYSTEM`, `AUDSYS`, `C##*` and the rest of
+`policy.ORACLE_INTERNAL_SCHEMAS`) are excluded from discovery regardless of
+grants, and `excluded_schemas` in the policy file adds to that list.
+
+Discovery fails closed. An unreachable data dictionary returns nothing, which
+reads as "object not found" and denies the request.
+
+### Columns may be declared or inferred
+
+An object with a `columns:` block carries hand-assigned sensitivity per column.
+An object without one takes its columns from `ALL_TAB_COLUMNS` at query time and
+classifies each by the name patterns in `config/policy/masking.yaml` — the same
+rules that decide masking, reused as a classifier. A discovered `TAX_ID` is
+`RESTRICTED` and a discovered `PASSWORD` is `NEVER`, so both are refused at
+validation rather than only masked at output.
+
+The gap to know about: a sensitive column whose name matches no pattern is
+classified `INTERNAL`. Inference keeps the allowlist honest as schemas evolve, but
+declared columns remain stronger where the data warrants it.
+
 ### The central design decision
 
 `sql_guard.py` never executes the text it was given. It parses input into an AST,
@@ -117,11 +153,18 @@ Defined in `config/policy/roles.yaml`. Clearance ladder:
 
 | Role | Clearance | Rows | Raw SQL | Sees SQL | Reconcile | Schemas (On-Prem / ATP) |
 |---|---|---|---|---|---|---|
-| `business_user` | INTERNAL | 200 | no | no | no | `CDM_RPT` / `ATP_RPT` |
-| `analyst` | CONFIDENTIAL | 500 | no | yes | yes | `+ CDM` / `+ ATP_CDM` |
-| `architect` | CONFIDENTIAL | 500 | no | yes | yes | `+ CDM` / `+ ATP_CDM` |
-| `support` | CONFIDENTIAL | 500 | no | yes | yes | `+ CDM_OPS` / `+ ATP_OPS` |
-| `admin` | RESTRICTED | 500 | yes | yes | yes | all |
+| `business_user` | INTERNAL | 200 | no | no | no | `EIM` / `*` |
+| `analyst` | CONFIDENTIAL | 500 | no | yes | yes | `EIM` / `*` |
+| `architect` | CONFIDENTIAL | 500 | no | yes | yes | `EIM` / `*` |
+| `support` | CONFIDENTIAL | 500 | no | yes | yes | `EIM` / `*` |
+| `admin` | RESTRICTED | 500 | yes | yes | yes | `EIM` / `*` |
+
+`*` means every schema the database account can read, and is only honoured where
+the database policy sets `allow_all_schemas`. It widens which schemas a role may
+reach; it does not raise clearance, so column classification still applies.
+
+Because all five roles currently share the same schema list, clearance and the
+`max_rows` / `show_sql` / `allow_raw_sql` flags are what actually separate them.
 
 Three things a role controls beyond schema access:
 
@@ -241,7 +284,7 @@ oracle-mcp-chatbot/
 ├── config/policy/      onprem.yaml, atp.yaml, roles.yaml, masking.yaml
 ├── prompts/            system_prompt.md
 ├── sql/                read-only users, grants, audit schema
-├── tests/              148 tests, no database required
+├── tests/              164 tests, no database required
 ├── mcp-clients/        Cursor / Claude Desktop configuration
 ├── docs/
 ├── Dockerfile

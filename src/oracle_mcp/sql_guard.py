@@ -34,7 +34,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
-from .policy import ObjectPolicy, PolicyStore, Role
+from .errors import ChatbotError
+from .policy import ColumnPolicy, ObjectPolicy, PolicyStore, Role
 
 DIALECT = "oracle"
 
@@ -222,7 +223,7 @@ class SqlGuard:
         )
         warnings.extend(limit_notes)
 
-        tree = self._expand_star(tree, objects, role, warnings)
+        tree = self._expand_star(tree, objects, role, warnings, database_name)
 
         safe_sql = tree.sql(dialect=DIALECT, comments=False, pretty=False)
         binds = sorted({p.name or p.sql(dialect=DIALECT) for p in tree.find_all(exp.Placeholder)})
@@ -422,7 +423,13 @@ class SqlGuard:
             for obj in candidates:
                 policy_col = obj.column(col_name)
                 if policy_col is None:
-                    continue
+                    if obj.columns_declared:
+                        continue
+                    # Object allowlisted without a column list. Classify by name so
+                    # the clearance check still bites here rather than deferring
+                    # entirely to output masking.
+                    inferred = self.store.infer_column_sensitivity(col_name)
+                    policy_col = ColumnPolicy(name=col_name, sensitivity=inferred)
                 if policy_col.rank > clearance:
                     errors.append(
                         ValidationError(
@@ -446,6 +453,7 @@ class SqlGuard:
         objects: dict[str, ObjectPolicy],
         role: Role,
         warnings: list[str],
+        database_name: str,
     ) -> exp.Expression:
         """Replace ``SELECT *`` with the columns this role may actually see.
 
@@ -464,10 +472,15 @@ class SqlGuard:
             return tree
 
         obj = next(iter(distinct.values()))
-        visible = obj.columns_visible_to(role.clearance_rank)
+        try:
+            all_columns = self.store.columns_for(database_name, obj)
+        except ChatbotError:
+            # Discovery is unavailable; leave the star for masking to handle.
+            return tree
+        visible = tuple(c for c in all_columns if c.rank <= role.clearance_rank)
         if not visible:
             return tree
-        hidden = len(obj.columns) - len(visible)
+        hidden = len(all_columns) - len(visible)
 
         for select in tree.find_all(exp.Select):
             if any(isinstance(e, exp.Star) for e in select.expressions):

@@ -6,11 +6,11 @@ generates SELECT-only SQL, validates it, executes it under hard limits, masks
 sensitive values, and logs everything.
 
 Built with [FastMCP 3](https://gofastmcp.com), `python-oracledb` (thin mode) and
-`sqlglot`. 148 tests, no database required to run them.
+`sqlglot`. 164 tests, no database required to run them.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                        # 148 passed
+pytest                                        # 164 passed
 cp .env.example .env                          # add credentials
 python -m oracle_mcp.server --profile onprem --check
 python -m oracle_mcp.server --profile onprem
@@ -77,21 +77,42 @@ that nothing reads.
 
 Two files decide everything:
 
-`config/policy/onprem.yaml` and `atp.yaml` — the object allowlist:
+`config/policy/onprem.yaml` and `atp.yaml` — the object allowlist. Each database
+picks one of two modes.
+
+**Strict**, which is what On-Prem uses. Only the objects named here are
+reachable, whatever the database grants allow:
 
 ```yaml
 schemas:
-  - name: CDM_RPT
+  - name: EIM
     objects:
-      - name: V_CUSTOMER_MASTER
-        type: VIEW
+      - name: EIM_PR_SYSTEM
+        type: TABLE
         sensitivity: INTERNAL
         large_table: true
-        columns:
-          - {name: CUSTOMER_NUMBER,          sensitivity: INTERNAL}
-          - {name: TAX_REGISTRATION_NUMBER,  sensitivity: RESTRICTED}
-          - {name: PRIMARY_EMAIL,            sensitivity: CONFIDENTIAL}
+        require_filter: true       # forces a WHERE clause
+        columns:                   # optional; omit to read them from the
+          - {name: SERIAL_NUMBER,  sensitivity: INTERNAL}   # data dictionary
+          - {name: TAX_ID,         sensitivity: RESTRICTED} # at query time
 ```
+
+Omitting `columns:` is supported and is what the deployed policy does. Columns
+are then read from `ALL_TAB_COLUMNS` and classified by the name patterns in
+`masking.yaml`, so the allowlist stays correct as the schema changes.
+
+**Wildcard**, which is what ATP uses. Every schema the read-only account can read
+becomes reachable:
+
+```yaml
+allow_all_schemas: true
+excluded_schemas: []   # added on top of the built-in Oracle internal schemas
+schemas: []
+```
+
+This deliberately gives up the object allowlist and makes the database grant the
+boundary instead. Clearance, the SQL guardrails, row caps and masking all still
+apply. Only use it against an account that is genuinely read-only.
 
 `config/policy/roles.yaml` — who may see what:
 
@@ -101,7 +122,7 @@ roles:
     clearance: INTERNAL      # cannot reach CONFIDENTIAL or RESTRICTED columns
     max_rows: 200
     allow_raw_sql: false
-    schemas: {ONPREM: [CDM_RPT], ATP: [ATP_RPT]}
+    schemas: {ONPREM: [EIM], ATP: ["*"]}   # "*" needs allow_all_schemas
 ```
 
 Sensitivity ladder: `PUBLIC < INTERNAL < CONFIDENTIAL < RESTRICTED < NEVER`.
@@ -157,6 +178,7 @@ the commented stage in the `Dockerfile`.
 
 | Document | Contents |
 |---|---|
+| [`docs/environment-configuration.md`](docs/environment-configuration.md) | How this deployment's connections are configured, and open items |
 | [`docs/architecture.md`](docs/architecture.md) | Design, request flow, security boundaries, RBAC, audit, error handling |
 | [`docs/testing-scenarios.md`](docs/testing-scenarios.md) | Full test plan with expected outcomes |
 | [`docs/deployment-checklist.md`](docs/deployment-checklist.md) | Pre-production checklist and hardening backlog |

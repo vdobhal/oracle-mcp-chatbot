@@ -1,0 +1,89 @@
+# =============================================================================
+# ORACLE ATP - object allowlist
+# =============================================================================
+# Target side of the On-Prem -> ATP integration. Same three-layer model as
+# on-prem: DB grants -> this allowlist -> role clearance.
+database: ATP
+display_name: Oracle ATP
+description: >-
+  Cloud target for customer master data. Serves downstream analytics and
+  cloud applications.
+
+default_schema: ATP_RPT
+
+schemas:
+  - name: ATP_RPT
+    description: Curated, business-facing reporting views in the cloud target.
+    business_domain: Customer Master
+    objects:
+      - name: V_CUSTOMER_MASTER
+        type: VIEW
+        description: Target-side customer master, mirrored from On-Prem CDM.
+        business_domain: Customer Master
+        sensitivity: INTERNAL
+        large_table: true
+        columns:
+          - {name: CUSTOMER_ID,        description: Surrogate key, matches On-Prem CDM_RPT.V_CUSTOMER_MASTER.CUSTOMER_ID, sensitivity: INTERNAL}
+          - {name: CUSTOMER_NUMBER,    description: Business customer number; reconciliation key, sensitivity: INTERNAL}
+          - {name: CUSTOMER_NAME,      description: Registered legal name,                    sensitivity: INTERNAL}
+          - {name: CUSTOMER_STATUS,    description: Lifecycle status,                         sensitivity: INTERNAL}
+          - {name: COUNTRY_CODE,       description: ISO country code,                         sensitivity: INTERNAL}
+          - {name: PARENT_CUSTOMER_ID, description: Hierarchy parent,                         sensitivity: INTERNAL}
+          - {name: TAX_REGISTRATION_NUMBER, description: Tax registration identifier,         sensitivity: RESTRICTED}
+          - {name: PRIMARY_EMAIL,      description: Primary contact email,                    sensitivity: CONFIDENTIAL}
+          - {name: PRIMARY_PHONE,      description: Primary contact phone,                    sensitivity: CONFIDENTIAL}
+          - {name: LOAD_DATE,          description: Timestamp the record landed in ATP,       sensitivity: INTERNAL}
+          - {name: LAST_UPDATED_DATE,  description: Last modification timestamp,              sensitivity: INTERNAL}
+          - {name: SOURCE_SYSTEM,      description: Originating system code,                  sensitivity: INTERNAL}
+
+      - name: V_CUSTOMER_ACCOUNT
+        type: VIEW
+        description: Customer accounts held in the cloud target.
+        business_domain: Customer Accounts
+        sensitivity: INTERNAL
+        large_table: true
+        columns:
+          - {name: ACCOUNT_ID,      description: Account surrogate key,      sensitivity: INTERNAL}
+          - {name: ACCOUNT_NUMBER,  description: Business account number,    sensitivity: INTERNAL}
+          - {name: CUSTOMER_ID,     description: Owning customer,            sensitivity: INTERNAL}
+          - {name: CUSTOMER_NUMBER, description: Owning customer number,     sensitivity: INTERNAL}
+          - {name: ACCOUNT_STATUS,  description: Account lifecycle status,   sensitivity: INTERNAL}
+          - {name: OPEN_DATE,       description: Account open date,          sensitivity: INTERNAL}
+
+  - name: ATP_CDM
+    description: Base target tables. Analyst/architect access only.
+    business_domain: Customer Master
+    objects:
+      - name: CUSTOMER
+        type: TABLE
+        description: Base target customer table behind ATP_RPT.V_CUSTOMER_MASTER.
+        business_domain: Customer Master
+        sensitivity: CONFIDENTIAL
+        large_table: true
+        require_filter: true
+        columns:
+          - {name: CUSTOMER_ID,       description: Primary key,               sensitivity: INTERNAL}
+          - {name: CUSTOMER_NUMBER,   description: Business customer number,  sensitivity: INTERNAL}
+          - {name: CUSTOMER_NAME,     description: Legal name,                sensitivity: INTERNAL}
+          - {name: CUSTOMER_STATUS,   description: Lifecycle status,          sensitivity: INTERNAL}
+          - {name: COUNTRY_CODE,      description: ISO country code,          sensitivity: INTERNAL}
+          - {name: TAX_REGISTRATION_NUMBER, description: Tax identifier,      sensitivity: RESTRICTED}
+          - {name: LOAD_DATE,         description: Landing timestamp,         sensitivity: INTERNAL}
+          - {name: LAST_UPDATED_DATE, description: Update timestamp,          sensitivity: INTERNAL}
+
+  - name: ATP_OPS
+    description: Cloud-side integration operations and rejection objects.
+    business_domain: Integration Operations
+    objects:
+      - name: V_LOAD_REJECTS
+        type: VIEW
+        description: Records rejected during the load from On-Prem into ATP.
+        business_domain: Integration Operations
+        sensitivity: INTERNAL
+        large_table: true
+        columns:
+          - {name: BATCH_ID,        description: Load batch identifier,        sensitivity: INTERNAL}
+          - {name: CUSTOMER_NUMBER, description: Rejected customer number,     sensitivity: INTERNAL}
+          - {name: REJECT_REASON,   description: Why the record was rejected,  sensitivity: INTERNAL}
+          - {name: REJECT_DATE,     description: Rejection timestamp,          sensitivity: INTERNAL}
+          - {name: SOURCE_SYSTEM,   description: Originating system code,      sensitivity: INTERNAL}

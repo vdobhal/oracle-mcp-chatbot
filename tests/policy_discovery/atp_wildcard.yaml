@@ -1,0 +1,10 @@
+# Fixture: ATP configured the way the deployed policy is - every schema the
+# database account can read, discovered from the data dictionary.
+database: ATP
+display_name: Oracle ATP
+description: Wildcard-mode fixture used by tests/test_discovery.py.
+
+allow_all_schemas: true
+excluded_schemas: [LEGACY_STAGING]
+default_schema: NAPP_READONLY
+schemas: []

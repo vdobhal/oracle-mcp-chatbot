@@ -9,16 +9,11 @@ sensitivity_levels:
   - CONFIDENTIAL
   - RESTRICTED
 
-# A schema list of ["*"] means every schema the database account can read, and
-# is only honoured where the database policy itself sets allow_all_schemas.
-# It does not bypass clearance: column classification still applies, inferred
-# from the naming rules in masking.yaml for schemas that are not declared.
 roles:
   business_user:
     description: >-
-      Business stakeholders asking operational questions. Holds only INTERNAL
-      clearance, so anything classified higher is masked or refused. SQL is
-      hidden from the response.
+      Business stakeholders asking operational questions. Sees curated reporting
+      views only, never base tables. SQL is hidden from the response.
     clearance: INTERNAL
     max_rows: 200
     allow_raw_sql: false          # cannot pass hand-written SQL to execute_readonly_sql
@@ -26,8 +21,8 @@ roles:
     allow_cartesian: false
     allow_reconciliation: false
     schemas:
-      ONPREM: [EIM]
-      ATP: ["*"]
+      ONPREM: [CDM_RPT]
+      ATP: [ATP_RPT]
 
   analyst:
     description: >-
@@ -40,8 +35,8 @@ roles:
     allow_cartesian: false
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
-      ATP: ["*"]
+      ONPREM: [CDM_RPT, CDM]
+      ATP: [ATP_RPT, ATP_CDM]
 
   architect:
     description: >-
@@ -54,8 +49,8 @@ roles:
     allow_cartesian: false
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
-      ATP: ["*"]
+      ONPREM: [CDM_RPT, CDM]
+      ATP: [ATP_RPT, ATP_CDM]
 
   support:
     description: >-
@@ -68,8 +63,8 @@ roles:
     allow_cartesian: false
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
-      ATP: ["*"]
+      ONPREM: [CDM_RPT, CDM_OPS]
+      ATP: [ATP_RPT, ATP_OPS]
 
   admin:
     description: >-
@@ -83,8 +78,8 @@ roles:
     allow_cartesian: true
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
-      ATP: ["*"]
+      ONPREM: [CDM_RPT, CDM, CDM_OPS]
+      ATP: [ATP_RPT, ATP_CDM, ATP_OPS]
 
 # Role granted when no role can be resolved. Deliberately the weakest role.
 default_role: business_user

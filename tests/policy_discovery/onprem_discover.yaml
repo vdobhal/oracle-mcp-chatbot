@@ -1,0 +1,26 @@
+# Fixture: strict object allowlist, but with no declared column lists - the way
+# the deployed On-Prem policy names its five EIM objects. Columns come from the
+# data dictionary and are classified by the masking rules.
+database: ONPREM
+display_name: On-Prem Oracle DB
+description: Discovery-mode fixture used by tests/test_discovery.py.
+
+default_schema: EIM
+
+schemas:
+  - name: EIM
+    description: Enterprise Information Management source objects.
+    business_domain: Product and Install Base
+    objects:
+      - name: EIM_PR_SYSTEM
+        type: TABLE
+        description: Registered systems.
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_PR_ROLES
+        type: TABLE
+        description: Role assignments.
+        sensitivity: INTERNAL
+        require_filter: false

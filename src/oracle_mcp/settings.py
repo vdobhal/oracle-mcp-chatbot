@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from dotenv import dotenv_values
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,6 +21,29 @@ from .errors import ConfigurationError
 ProfileName = Literal["onprem", "atp"]
 DB_NAME_BY_PROFILE = {"onprem": "ONPREM", "atp": "ATP"}
 PROFILE_BY_DB_NAME = {v: k for k, v in DB_NAME_BY_PROFILE.items()}
+
+DEFAULT_ENV_FILE = ".env"
+_loaded_env_files: set[str] = set()
+
+
+def load_env_file(path: str | Path = DEFAULT_ENV_FILE) -> None:
+    """Merge a ``.env`` file into ``os.environ``.
+
+    ``BaseSettings`` reads its own ``ORACLE_MCP_*`` fields from the env file, but
+    the per-database ``ONPREM_*`` / ``ATP_*`` variables are read straight from
+    the environment. Without this, credentials placed in ``.env`` would be
+    silently ignored and the server would report a missing username.
+
+    Real environment variables always win, so secrets injected by a container
+    runtime or vault agent override a file left on disk.
+    """
+    resolved = str(Path(path).resolve())
+    if resolved in _loaded_env_files or not Path(path).is_file():
+        return
+    for key, value in dotenv_values(path).items():
+        if value is not None and key not in os.environ:
+            os.environ[key] = value
+    _loaded_env_files.add(resolved)
 
 
 def _env(key: str, default: str = "") -> str:
@@ -209,6 +233,7 @@ class Settings(BaseSettings):
 
     @property
     def oracle_profiles(self) -> dict[ProfileName, OracleProfile]:
+        load_env_file()
         return {name: _load_profile(name) for name in self.active_profiles}
 
     @property
@@ -219,9 +244,11 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    load_env_file()
     return Settings()
 
 
 def reset_settings_cache() -> None:
     """Used by tests that mutate the environment."""
     get_settings.cache_clear()
+    _loaded_env_files.clear()

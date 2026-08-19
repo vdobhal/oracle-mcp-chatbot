@@ -35,7 +35,7 @@ from .explain import (
     profile_rows,
 )
 from .masking import Masker
-from .metadata import MetadataService
+from .metadata import DataDictionary, MetadataService
 from .policy import PolicyStore, Role
 from .reconcile import SideResult, compare_result_sets
 from .settings import Settings
@@ -92,7 +92,11 @@ class ToolService:
         self.registry = registry
         self.audit = audit
         self.masker = Masker(store.masking_config)
-        self.metadata = MetadataService(store)
+        self.dictionary = DataDictionary(registry)
+        # Lets the policy layer discover schemas and columns that the YAML does
+        # not declare, classifying discovered columns by the masking rules.
+        store.bind_dictionary(self.dictionary, self.masker.infer_sensitivity)
+        self.metadata = MetadataService(store, self.dictionary)
         self.guard = SqlGuard(
             store,
             max_rows=settings.max_rows,

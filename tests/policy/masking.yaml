@@ -1,0 +1,125 @@
+# =============================================================================
+# Data masking rules
+# =============================================================================
+# Two independent layers, both always applied:
+#   1. column_patterns - name-based. Matches the COLUMN NAME (case-insensitive
+#      regex, matched against the bare name and the SCHEMA.TABLE.COLUMN path).
+#   2. value_scanners  - content-based backstop. Catches secrets that leaked into
+#      a generically-named column (e.g. NOTES containing a card number).
+#
+# Strategies:
+#   redact        -> "[REDACTED]"
+#   last4         -> "****1234"
+#   email         -> "j***@example.com"
+#   phone         -> "***-***-1234"
+#   hash          -> "sha256:ab12cd34" (stable, allows joins/counts without exposure)
+#   partial_name  -> "Smi***"
+#   date_year     -> "1987"  (keeps year, drops day/month)
+#   suppress      -> column is dropped from the result entirely
+#
+# A column is masked when it matches a pattern AND the caller's role clearance is
+# below `min_clearance`. Roles at or above `min_clearance` see the raw value.
+
+column_patterns:
+  # --- Authentication secrets: never revealed, to anyone ---
+  - name: auth_secrets
+    pattern: '(?i)(password|passwd|pwd|secret|api[_-]?key|token|credential|private[_-]?key|salt|hash_value|auth)'
+    strategy: redact
+    min_clearance: NEVER
+    reason: Authentication material is never returned by the chatbot.
+
+  # --- Government / tax identifiers ---
+  - name: national_id
+    pattern: '(?i)(ssn|social_security|national_id|nin|aadhaar|sin_number)'
+    strategy: last4
+    min_clearance: RESTRICTED
+    reason: Government-issued personal identifier.
+
+  - name: tax_id
+    pattern: '(?i)(tax_id|taxid|tax_registration|tin_number|vat_number|gst_number|ein)'
+    strategy: last4
+    min_clearance: RESTRICTED
+    reason: Tax registration identifier.
+
+  # --- Financial ---
+  - name: bank_account
+    pattern: '(?i)(bank_account|account_number_bank|iban|swift|routing_number|bank_acct)'
+    strategy: last4
+    min_clearance: RESTRICTED
+    reason: Bank account detail.
+
+  - name: card_number
+    pattern: '(?i)(credit_card|card_number|card_no|pan_number|cc_num)'
+    strategy: last4
+    min_clearance: NEVER
+    reason: PCI cardholder data is never returned in clear text.
+
+  - name: compensation
+    pattern: '(?i)(salary|compensation|bonus|wage|pay_rate|annual_income)'
+    strategy: redact
+    min_clearance: RESTRICTED
+    reason: HR compensation data.
+
+  # --- Contact / personal ---
+  - name: email_address
+    pattern: '(?i)(email|e_mail|mail_address)'
+    strategy: email
+    min_clearance: CONFIDENTIAL
+    reason: Personal contact data.
+
+  - name: phone_number
+    pattern: '(?i)(phone|mobile|telephone|fax|cell_number)'
+    strategy: phone
+    min_clearance: CONFIDENTIAL
+    reason: Personal contact data.
+
+  - name: street_address
+    pattern: '(?i)(address_line|street|addr_line|postal_code|zip_code|house_number)'
+    strategy: redact
+    min_clearance: CONFIDENTIAL
+    reason: Personal location data.
+
+  - name: person_name
+    pattern: '(?i)(first_name|last_name|middle_name|full_name|contact_name|given_name|surname)'
+    strategy: partial_name
+    min_clearance: CONFIDENTIAL
+    reason: Personal identifier.
+
+  - name: date_of_birth
+    pattern: '(?i)(date_of_birth|birth_date|dob)'
+    strategy: date_year
+    min_clearance: RESTRICTED
+    reason: Personal identifier.
+
+# Content-based backstop. Applied to every string value that survives layer 1.
+value_scanners:
+  - name: credit_card_value
+    pattern: '\b(?:\d[ -]*?){13,19}\b'
+    strategy: last4
+    luhn_check: true            # only masks if the digits pass a Luhn checksum
+    reason: Value looks like a payment card number.
+
+  - name: ssn_value
+    pattern: '\b\d{3}-\d{2}-\d{4}\b'
+    strategy: redact
+    reason: Value looks like a US SSN.
+
+  - name: email_value
+    pattern: '\b[A-Za-z0-9._%%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+    strategy: email
+    min_clearance: CONFIDENTIAL
+    reason: Value looks like an email address.
+
+  - name: private_key_value
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    strategy: redact
+    reason: Value contains a private key.
+
+  - name: jwt_value
+    pattern: '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'
+    strategy: redact
+    reason: Value looks like a JWT.
+
+# Truncate long free-text values before they reach the LLM. Limits both token
+# burn and the blast radius of prompt-injection payloads stored in the database.
+max_string_length: 400

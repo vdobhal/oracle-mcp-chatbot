@@ -1,8 +1,15 @@
 # Test plan
 
-148 automated tests run without an Oracle instance. `FakeConnection` stands in
-for the driver, so the guardrail, masking, RBAC and audit paths are all exercised
-deterministically in about two seconds.
+164 automated tests run without an Oracle instance. `FakeConnection` and
+`FakeDictionary` stand in for the driver, so the guardrail, masking, RBAC,
+discovery and audit paths are all exercised deterministically in a few seconds.
+
+Tests run against the fixture policies in `tests/policy/` and
+`tests/policy_discovery/`, never the deployed allowlist in `config/policy/`.
+That keeps the suite describing the behaviour of the access model rather than
+one environment's table list, so adding an object to the allowlist does not
+break unrelated tests. The two tests that *do* assert on the deployed files say
+so in their names.
 
 ```bash
 pytest                          # everything
@@ -19,10 +26,11 @@ pytest --cov=oracle_mcp --cov-report=term-missing
 | `test_tools.py` | 30 | Discovery tools, validate/execute trust chain, audit records, role binding |
 | `test_masking.py` | 20 | Name rules, classification masking, content scanners, Luhn, truncation |
 | `test_policy.py` | 17 | RBAC, clearance, denial wording, credential isolation, ATP wallet config |
+| `test_discovery.py` | 16 | Wildcard schemas, dictionary-discovered columns, inferred classification, fail-closed |
 | `test_reconcile.py` | 12 | Set comparison, composite keys, normalisation, tool gating |
 | `test_server.py` | 7 | FastMCP registration, schemas, protocol round-trip, profile gating |
 
-`pytest -m security` selects the 99 tests that assert a security control directly.
+`pytest -m security` selects the 115 tests that assert a security control directly.
 
 ## Security scenarios and expected outcomes
 
@@ -67,6 +75,28 @@ pytest --cov=oracle_mcp --cov-report=term-missing
 | `admin` names the same column | Approved |
 | `COUNT(restricted_column)` | Rejected — aggregation is not a loophole |
 | `SELECT *` as `business_user` | Approved; expanded to permitted columns only |
+
+### Discovery mode
+
+Covers the two deployed shapes: On-Prem allowlists objects but not columns, and
+ATP allowlists nothing and relies on the grant. Exercised in
+`tests/test_discovery.py` with a fake data dictionary.
+
+| Scenario | Expected |
+|---|---|
+| Object in the dictionary but not the allowlist (strict mode) | Rejected — discovery does not widen a named allowlist |
+| Columns of an allowlisted object with no `columns:` block | Read from `ALL_TAB_COLUMNS` |
+| Discovered `TAX_ID` | Classified `RESTRICTED` by the masking rules |
+| Discovered `CONTACT_EMAIL` | Classified `CONFIDENTIAL` |
+| `business_user` names a discovered `RESTRICTED` column | Rejected, `RESTRICTED_COLUMN` |
+| `SELECT *` on a discovered object | Expanded to the columns the role may see |
+| Wildcard mode, schema declared nowhere in YAML | Approved if the account can read it |
+| Wildcard mode, `SYS.USER$` | Rejected — Oracle internals excluded regardless of grants |
+| Wildcard mode, schema in `excluded_schemas` | Rejected |
+| Wildcard mode, object absent from the dictionary | Rejected — the grant decides existence |
+| Wildcard mode, data dictionary unreachable | Rejected — discovery fails closed |
+| Role scoped to named schemas on a wildcard database | Keeps its scope, `ACCESS_DENIED` elsewhere |
+| Deployed `onprem.yaml` | Exposes exactly the five agreed EIM objects |
 
 ### Row limits
 

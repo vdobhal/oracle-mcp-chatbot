@@ -114,6 +114,7 @@ class MaskRule:
     name: str
     pattern: re.Pattern[str]
     strategy: str
+    min_clearance: str
     min_clearance_rank: int
     reason: str
     luhn_check: bool = False
@@ -144,14 +145,14 @@ def _build_rules(entries: Iterable[dict[str, Any]], default_clearance: str) -> l
         strategy = str(entry.get("strategy", "redact"))
         if strategy not in STRATEGIES:
             raise ValueError(f"Unknown masking strategy: {strategy}")
+        min_clearance = str(entry.get("min_clearance", default_clearance)).upper()
         rules.append(
             MaskRule(
                 name=str(entry["name"]),
                 pattern=re.compile(str(entry["pattern"])),
                 strategy=strategy,
-                min_clearance_rank=sensitivity_rank(
-                    str(entry.get("min_clearance", default_clearance))
-                ),
+                min_clearance=min_clearance,
+                min_clearance_rank=sensitivity_rank(min_clearance),
                 reason=str(entry.get("reason", "Sensitive data")),
                 luhn_check=bool(entry.get("luhn_check", False)),
             )
@@ -190,6 +191,25 @@ class Masker:
                 return rule
         return None
 
+    def infer_sensitivity(self, column_name: str, *, qualified_name: str | None = None) -> str:
+        """Classify a column that the policy file does not declare.
+
+        Objects allowlisted without an explicit column list get their columns from
+        the data dictionary, so there is no hand-assigned sensitivity to enforce
+        clearance against. The name-based masking rules already encode which column
+        names are sensitive and how sensitive they are, so reuse that judgement here:
+        the strictest matching rule becomes the column's classification. Without this
+        the clearance check would silently pass every discovered column at INTERNAL.
+        """
+        best = "INTERNAL"
+        best_rank = sensitivity_rank(best)
+        for rule in self.column_rules:
+            haystacks = [column_name] + ([qualified_name] if qualified_name else [])
+            if any(rule.pattern.search(h) for h in haystacks):
+                if rule.min_clearance_rank > best_rank:
+                    best, best_rank = rule.min_clearance, rule.min_clearance_rank
+        return best
+
     def policy_rule_for(
         self, column_policy: ColumnPolicy | None, clearance_rank: int
     ) -> MaskRule | None:
@@ -204,6 +224,7 @@ class Masker:
             name="policy_classification",
             pattern=re.compile(r"^$"),
             strategy="redact",
+            min_clearance=column_policy.sensitivity,
             min_clearance_rank=column_policy.rank,
             reason=f"Column classified {column_policy.sensitivity}; role clearance is lower.",
         )

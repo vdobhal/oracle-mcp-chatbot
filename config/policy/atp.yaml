@@ -1,89 +1,43 @@
 # =============================================================================
 # ORACLE ATP - object allowlist
 # =============================================================================
-# Target side of the On-Prem -> ATP integration. Same three-layer model as
-# on-prem: DB grants -> this allowlist -> role clearance.
+# This database runs in wildcard mode: every schema the connected account can
+# read is reachable, discovered live from the data dictionary.
+#
+# Read this before changing it. Wildcard mode gives up layer 2 of the access
+# model. The remaining layers still apply - role clearance, the SQL guardrails,
+# row caps, timeouts and output masking - but the question of *which objects
+# exist at all* is answered by the database grant rather than by this file.
+#
+# That makes the grant on ATP_USER load-bearing in a way it is not on On-Prem.
+# It is only defensible while that account is genuinely read-only and scoped to
+# reporting data. Verify with:
+#
+#   SELECT * FROM user_sys_privs;      -- expect CREATE SESSION and little else
+#   SELECT * FROM user_role_privs;     -- DWROLE should NOT appear
+#
+# To go back to strict allowlisting, set allow_all_schemas to false and list
+# schemas and objects the way config/policy/onprem.yaml does.
 database: ATP
 display_name: Oracle ATP
 description: >-
-  Cloud target for customer master data. Serves downstream analytics and
-  cloud applications.
+  Autonomous Transaction Processing target of the On-Prem -> ATP integration.
+  All schemas readable by the chatbot account are exposed.
 
-default_schema: ATP_RPT
+allow_all_schemas: true
 
-schemas:
-  - name: ATP_RPT
-    description: Curated, business-facing reporting views in the cloud target.
-    business_domain: Customer Master
-    objects:
-      - name: V_CUSTOMER_MASTER
-        type: VIEW
-        description: Target-side customer master, mirrored from On-Prem CDM.
-        business_domain: Customer Master
-        sensitivity: INTERNAL
-        large_table: true
-        columns:
-          - {name: CUSTOMER_ID,        description: Surrogate key, matches On-Prem CDM_RPT.V_CUSTOMER_MASTER.CUSTOMER_ID, sensitivity: INTERNAL}
-          - {name: CUSTOMER_NUMBER,    description: Business customer number; reconciliation key, sensitivity: INTERNAL}
-          - {name: CUSTOMER_NAME,      description: Registered legal name,                    sensitivity: INTERNAL}
-          - {name: CUSTOMER_STATUS,    description: Lifecycle status,                         sensitivity: INTERNAL}
-          - {name: COUNTRY_CODE,       description: ISO country code,                         sensitivity: INTERNAL}
-          - {name: PARENT_CUSTOMER_ID, description: Hierarchy parent,                         sensitivity: INTERNAL}
-          - {name: TAX_REGISTRATION_NUMBER, description: Tax registration identifier,         sensitivity: RESTRICTED}
-          - {name: PRIMARY_EMAIL,      description: Primary contact email,                    sensitivity: CONFIDENTIAL}
-          - {name: PRIMARY_PHONE,      description: Primary contact phone,                    sensitivity: CONFIDENTIAL}
-          - {name: LOAD_DATE,          description: Timestamp the record landed in ATP,       sensitivity: INTERNAL}
-          - {name: LAST_UPDATED_DATE,  description: Last modification timestamp,              sensitivity: INTERNAL}
-          - {name: SOURCE_SYSTEM,      description: Originating system code,                  sensitivity: INTERNAL}
+# Oracle's own schemas are excluded from discovery no matter what the account
+# was granted; policy.ORACLE_INTERNAL_SCHEMAS covers the standard set and
+# anything listed here is excluded on top of it.
+excluded_schemas: []
 
-      - name: V_CUSTOMER_ACCOUNT
-        type: VIEW
-        description: Customer accounts held in the cloud target.
-        business_domain: Customer Accounts
-        sensitivity: INTERNAL
-        large_table: true
-        columns:
-          - {name: ACCOUNT_ID,      description: Account surrogate key,      sensitivity: INTERNAL}
-          - {name: ACCOUNT_NUMBER,  description: Business account number,    sensitivity: INTERNAL}
-          - {name: CUSTOMER_ID,     description: Owning customer,            sensitivity: INTERNAL}
-          - {name: CUSTOMER_NUMBER, description: Owning customer number,     sensitivity: INTERNAL}
-          - {name: ACCOUNT_STATUS,  description: Account lifecycle status,   sensitivity: INTERNAL}
-          - {name: OPEN_DATE,       description: Account open date,          sensitivity: INTERNAL}
+# Objects referenced without a schema prefix resolve against the connected
+# account's own schema.
+default_schema: NAPP_READONLY
 
-  - name: ATP_CDM
-    description: Base target tables. Analyst/architect access only.
-    business_domain: Customer Master
-    objects:
-      - name: CUSTOMER
-        type: TABLE
-        description: Base target customer table behind ATP_RPT.V_CUSTOMER_MASTER.
-        business_domain: Customer Master
-        sensitivity: CONFIDENTIAL
-        large_table: true
-        require_filter: true
-        columns:
-          - {name: CUSTOMER_ID,       description: Primary key,               sensitivity: INTERNAL}
-          - {name: CUSTOMER_NUMBER,   description: Business customer number,  sensitivity: INTERNAL}
-          - {name: CUSTOMER_NAME,     description: Legal name,                sensitivity: INTERNAL}
-          - {name: CUSTOMER_STATUS,   description: Lifecycle status,          sensitivity: INTERNAL}
-          - {name: COUNTRY_CODE,      description: ISO country code,          sensitivity: INTERNAL}
-          - {name: TAX_REGISTRATION_NUMBER, description: Tax identifier,      sensitivity: RESTRICTED}
-          - {name: LOAD_DATE,         description: Landing timestamp,         sensitivity: INTERNAL}
-          - {name: LAST_UPDATED_DATE, description: Update timestamp,          sensitivity: INTERNAL}
-
-  - name: ATP_OPS
-    description: Cloud-side integration operations and rejection objects.
-    business_domain: Integration Operations
-    objects:
-      - name: V_LOAD_REJECTS
-        type: VIEW
-        description: Records rejected during the load from On-Prem into ATP.
-        business_domain: Integration Operations
-        sensitivity: INTERNAL
-        large_table: true
-        columns:
-          - {name: BATCH_ID,        description: Load batch identifier,        sensitivity: INTERNAL}
-          - {name: CUSTOMER_NUMBER, description: Rejected customer number,     sensitivity: INTERNAL}
-          - {name: REJECT_REASON,   description: Why the record was rejected,  sensitivity: INTERNAL}
-          - {name: REJECT_DATE,     description: Rejection timestamp,          sensitivity: INTERNAL}
-          - {name: SOURCE_SYSTEM,   description: Originating system code,      sensitivity: INTERNAL}
+# No schemas are declared. Discovered objects carry no curated business
+# description, and their columns are classified from the naming rules in
+# masking.yaml rather than by a data steward. Declare an object here to give it
+# a proper description and hand-assigned column sensitivity; declared entries
+# take precedence over discovery.
+schemas: []
