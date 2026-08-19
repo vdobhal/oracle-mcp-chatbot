@@ -290,6 +290,20 @@ def test_star_is_expanded_to_columns_the_role_may_see(guard, business_user):
     assert "CUSTOMER_ID" in sql
 
 
+def test_count_star_is_not_mistaken_for_a_wildcard_projection(guard, analyst):
+    """COUNT(*) holds a Star node but selects no columns, so it must not trigger
+    star expansion or the warning that goes with it."""
+    result = guard.validate(
+        "SELECT customer_status, COUNT(*) AS n FROM CDM_RPT.V_CUSTOMER_MASTER "
+        "GROUP BY customer_status",
+        database_name="ONPREM",
+        role=analyst,
+    )
+    assert result.approved
+    assert "COUNT(*)" in result.rewritten_safe_sql.upper()
+    assert not any("SELECT *" in w for w in result.warnings)
+
+
 def test_aggregating_a_restricted_column_is_still_rejected(guard, analyst):
     result = guard.validate(
         "SELECT COUNT(tax_registration_number) FROM CDM_RPT.V_CUSTOMER_MASTER",

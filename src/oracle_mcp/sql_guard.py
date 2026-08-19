@@ -461,7 +461,14 @@ class SqlGuard:
         where attribution is unambiguous. Otherwise the star survives and the
         masking layer redacts over-classified columns on the way out.
         """
-        if tree.find(exp.Star) is None:
+        # Must look for a star in a projection list specifically, not anywhere in
+        # the tree: COUNT(*) contains a Star that is not a wildcard projection,
+        # and treating it as one warns about an expansion that never happens.
+        if not any(
+            isinstance(e, exp.Star)
+            for select in tree.find_all(exp.Select)
+            for e in select.expressions
+        ):
             return tree
         distinct = {obj.fqn: obj for obj in objects.values()}
         if len(distinct) != 1:
