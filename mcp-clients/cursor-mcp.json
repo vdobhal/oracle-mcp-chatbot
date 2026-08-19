@@ -1,0 +1,73 @@
+{
+  "_comment": "Cursor: save as .cursor/mcp.json in your project, or ~/.cursor/mcp.json globally. Claude Desktop uses the same shape under a top-level 'mcpServers' key. Secrets are referenced from the shell environment rather than written here, because this file is often committed.",
+
+  "mcpServers": {
+    "oracle-onprem": {
+      "command": "/absolute/path/to/oracle-mcp-chatbot/.venv/bin/python",
+      "args": ["-m", "oracle_mcp.server", "--profile", "onprem"],
+      "cwd": "/absolute/path/to/oracle-mcp-chatbot",
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/oracle-mcp-chatbot/src",
+        "ORACLE_MCP_PROFILE": "onprem",
+        "ORACLE_MCP_TRANSPORT": "stdio",
+        "ORACLE_MCP_POLICY_DIR": "/absolute/path/to/oracle-mcp-chatbot/config/policy",
+        "ORACLE_MCP_MAX_ROWS": "500",
+        "ORACLE_MCP_QUERY_TIMEOUT_SECONDS": "30",
+        "ORACLE_MCP_ROLE_BINDING_MODE": "env",
+        "ORACLE_MCP_PINNED_ROLE": "analyst",
+        "ORACLE_MCP_PINNED_USER_ID": "your.name@example.com",
+        "ORACLE_MCP_AUDIT_SINK": "file",
+        "ORACLE_MCP_AUDIT_FILE": "/absolute/path/to/oracle-mcp-chatbot/logs/audit-onprem.jsonl",
+        "ONPREM_ENABLED": "true",
+        "ONPREM_USER": "CHATBOT_RO",
+        "ONPREM_PASSWORD": "${ONPREM_PASSWORD}",
+        "ONPREM_HOST": "oracle-onprem.internal.example.com",
+        "ONPREM_PORT": "1521",
+        "ONPREM_SERVICE_NAME": "CDMPRD",
+        "ONPREM_MODE": "thin",
+        "ATP_ENABLED": "false"
+      }
+    },
+
+    "oracle-atp": {
+      "command": "/absolute/path/to/oracle-mcp-chatbot/.venv/bin/python",
+      "args": ["-m", "oracle_mcp.server", "--profile", "atp"],
+      "cwd": "/absolute/path/to/oracle-mcp-chatbot",
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/oracle-mcp-chatbot/src",
+        "ORACLE_MCP_PROFILE": "atp",
+        "ORACLE_MCP_TRANSPORT": "stdio",
+        "ORACLE_MCP_POLICY_DIR": "/absolute/path/to/oracle-mcp-chatbot/config/policy",
+        "ORACLE_MCP_MAX_ROWS": "500",
+        "ORACLE_MCP_QUERY_TIMEOUT_SECONDS": "30",
+        "ORACLE_MCP_ROLE_BINDING_MODE": "env",
+        "ORACLE_MCP_PINNED_ROLE": "analyst",
+        "ORACLE_MCP_PINNED_USER_ID": "your.name@example.com",
+        "ORACLE_MCP_AUDIT_SINK": "file",
+        "ORACLE_MCP_AUDIT_FILE": "/absolute/path/to/oracle-mcp-chatbot/logs/audit-atp.jsonl",
+        "ONPREM_ENABLED": "false",
+        "ATP_ENABLED": "true",
+        "ATP_USER": "CHATBOT_RO",
+        "ATP_PASSWORD": "${ATP_PASSWORD}",
+        "ATP_DSN": "myatp_low",
+        "ATP_WALLET_DIR": "/secure/path/wallets/atp",
+        "ATP_CONFIG_DIR": "/secure/path/wallets/atp",
+        "ATP_WALLET_PASSWORD": "${ATP_WALLET_PASSWORD}",
+        "ATP_MODE": "thin"
+      }
+    },
+
+    "_oracle-reconciliation": {
+      "_comment": "Remove the leading underscore to enable. This server holds BOTH credential sets and exposes compare_onprem_and_atp_data. Restrict to users who need reconciliation.",
+      "command": "/absolute/path/to/oracle-mcp-chatbot/.venv/bin/python",
+      "args": ["-m", "oracle_mcp.server", "--profile", "both"],
+      "cwd": "/absolute/path/to/oracle-mcp-chatbot",
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/oracle-mcp-chatbot/src",
+        "ORACLE_MCP_PROFILE": "both",
+        "ORACLE_MCP_ROLE_BINDING_MODE": "env",
+        "ORACLE_MCP_PINNED_ROLE": "support"
+      }
+    }
+  }
+}

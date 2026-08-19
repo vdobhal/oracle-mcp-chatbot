@@ -1,0 +1,116 @@
+# =============================================================================
+# ON-PREM ORACLE DB - object allowlist
+# =============================================================================
+# Nothing outside this file is reachable, regardless of what the read-only
+# database user is technically granted. This is the second of three independent
+# access layers (DB grants -> this allowlist -> role clearance).
+#
+# Replace the sample objects below with your real curated views before go-live.
+database: ONPREM
+display_name: On-Prem Oracle DB
+description: >-
+  System of record for customer master data (CDM). Source side of the
+  On-Prem -> ATP integration.
+
+# Object referenced without a schema prefix resolves here.
+default_schema: CDM_RPT
+
+schemas:
+  - name: CDM_RPT
+    description: Curated, business-facing reporting views over customer master data.
+    business_domain: Customer Master
+    objects:
+      - name: V_CUSTOMER_MASTER
+        type: VIEW
+        description: One row per customer with current master attributes.
+        business_domain: Customer Master
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: false
+        columns:
+          - {name: CUSTOMER_ID,        description: Surrogate key for the customer,               sensitivity: INTERNAL}
+          - {name: CUSTOMER_NUMBER,    description: Business-facing customer number,              sensitivity: INTERNAL}
+          - {name: CUSTOMER_NAME,      description: Registered legal name,                        sensitivity: INTERNAL}
+          - {name: CUSTOMER_STATUS,    description: Lifecycle status (ACTIVE/INACTIVE/PENDING),   sensitivity: INTERNAL}
+          - {name: COUNTRY_CODE,       description: ISO country code of registration,             sensitivity: INTERNAL}
+          - {name: PARENT_CUSTOMER_ID, description: Parent in the customer hierarchy; null at top, sensitivity: INTERNAL}
+          - {name: TAX_REGISTRATION_NUMBER, description: Tax registration identifier,             sensitivity: RESTRICTED}
+          - {name: PRIMARY_EMAIL,      description: Primary contact email,                        sensitivity: CONFIDENTIAL}
+          - {name: PRIMARY_PHONE,      description: Primary contact phone,                        sensitivity: CONFIDENTIAL}
+          - {name: ADDRESS_LINE1,      description: Registered address line 1,                    sensitivity: CONFIDENTIAL}
+          - {name: CREATED_DATE,       description: Record creation timestamp,                    sensitivity: INTERNAL}
+          - {name: LAST_UPDATED_DATE,  description: Last modification timestamp,                  sensitivity: INTERNAL}
+          - {name: SOURCE_SYSTEM,      description: Originating system code,                      sensitivity: INTERNAL}
+
+      - name: V_CUSTOMER_HIERARCHY
+        type: VIEW
+        description: Parent/child customer relationships with hierarchy level.
+        business_domain: Customer Master
+        sensitivity: INTERNAL
+        large_table: false
+        columns:
+          - {name: CUSTOMER_ID,        description: Child customer key,          sensitivity: INTERNAL}
+          - {name: PARENT_CUSTOMER_ID, description: Parent customer key,         sensitivity: INTERNAL}
+          - {name: HIERARCHY_LEVEL,    description: Depth from the top parent,   sensitivity: INTERNAL}
+          - {name: HIERARCHY_PATH,     description: Slash-delimited ancestry,    sensitivity: INTERNAL}
+          - {name: IS_ORPHAN_FLAG,     description: Y when no valid parent found, sensitivity: INTERNAL}
+
+      - name: V_EA_CONTRACT
+        type: VIEW
+        description: Enterprise Agreement contract header linked to customers.
+        business_domain: Contracts
+        sensitivity: INTERNAL
+        large_table: false
+        columns:
+          - {name: EA_CONTRACT_ID,   description: Enterprise Agreement contract identifier, sensitivity: INTERNAL}
+          - {name: CUSTOMER_ID,      description: Owning customer key,                      sensitivity: INTERNAL}
+          - {name: CONTRACT_STATUS,  description: Contract lifecycle status,                sensitivity: INTERNAL}
+          - {name: EFFECTIVE_DATE,   description: Contract start date,                      sensitivity: INTERNAL}
+          - {name: EXPIRY_DATE,      description: Contract end date,                        sensitivity: INTERNAL}
+
+  - name: CDM
+    description: Base customer master tables. Analyst/architect access only.
+    business_domain: Customer Master
+    objects:
+      - name: CUSTOMER
+        type: TABLE
+        description: Base customer table behind V_CUSTOMER_MASTER.
+        business_domain: Customer Master
+        sensitivity: CONFIDENTIAL
+        large_table: true
+        require_filter: true        # too big to scan without a WHERE clause
+        columns:
+          - {name: CUSTOMER_ID,       description: Primary key,                sensitivity: INTERNAL}
+          - {name: CUSTOMER_NUMBER,   description: Business customer number,   sensitivity: INTERNAL}
+          - {name: CUSTOMER_NAME,     description: Legal name,                 sensitivity: INTERNAL}
+          - {name: CUSTOMER_STATUS,   description: Lifecycle status,           sensitivity: INTERNAL}
+          - {name: COUNTRY_CODE,      description: ISO country code,           sensitivity: INTERNAL}
+          - {name: PARENT_CUSTOMER_ID, description: Hierarchy parent,          sensitivity: INTERNAL}
+          - {name: TAX_REGISTRATION_NUMBER, description: Tax identifier,       sensitivity: RESTRICTED}
+          - {name: PRIMARY_EMAIL,     description: Contact email,              sensitivity: CONFIDENTIAL}
+          - {name: PRIMARY_PHONE,     description: Contact phone,              sensitivity: CONFIDENTIAL}
+          - {name: ADDRESS_LINE1,     description: Address line 1,             sensitivity: CONFIDENTIAL}
+          - {name: CREATED_DATE,      description: Creation timestamp,         sensitivity: INTERNAL}
+          - {name: LAST_UPDATED_DATE, description: Update timestamp,           sensitivity: INTERNAL}
+          - {name: SOURCE_SYSTEM,     description: Origin system,              sensitivity: INTERNAL}
+
+  - name: CDM_OPS
+    description: Integration operations, staging and error objects.
+    business_domain: Integration Operations
+    objects:
+      - name: V_INTEGRATION_STATUS
+        type: VIEW
+        description: Per-record outcome of the On-Prem to ATP integration.
+        business_domain: Integration Operations
+        sensitivity: INTERNAL
+        large_table: true
+        columns:
+          - {name: BATCH_ID,        description: Integration batch identifier,          sensitivity: INTERNAL}
+          - {name: CUSTOMER_ID,     description: Customer being integrated,             sensitivity: INTERNAL}
+          - {name: CUSTOMER_NUMBER, description: Business customer number,              sensitivity: INTERNAL}
+          - {name: TARGET_SYSTEM,   description: Destination system code,               sensitivity: INTERNAL}
+          - {name: STATUS,          description: SUCCESS / FAILED / PENDING / RETRY,    sensitivity: INTERNAL}
+          - {name: ERROR_CODE,      description: Failure code when status is FAILED,    sensitivity: INTERNAL}
+          - {name: ERROR_MESSAGE,   description: Failure detail text,                   sensitivity: INTERNAL}
+          - {name: PROCESSED_DATE,  description: Processing timestamp,                  sensitivity: INTERNAL}
+          - {name: RETRY_COUNT,     description: Number of retry attempts,              sensitivity: INTERNAL}

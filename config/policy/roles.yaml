@@ -1,0 +1,85 @@
+# =============================================================================
+# Role and access control model
+# =============================================================================
+# Sensitivity ladder (low -> high). A role may only touch objects/columns whose
+# classification is at or below its clearance.
+sensitivity_levels:
+  - PUBLIC
+  - INTERNAL
+  - CONFIDENTIAL
+  - RESTRICTED
+
+roles:
+  business_user:
+    description: >-
+      Business stakeholders asking operational questions. Sees curated reporting
+      views only, never base tables. SQL is hidden from the response.
+    clearance: INTERNAL
+    max_rows: 200
+    allow_raw_sql: false          # cannot pass hand-written SQL to execute_readonly_sql
+    show_sql: false               # SQL is not returned in tool output
+    allow_cartesian: false
+    allow_reconciliation: false
+    schemas:
+      ONPREM: [CDM_RPT]
+      ATP: [ATP_RPT]
+
+  analyst:
+    description: >-
+      Data analysts building reports and investigating data quality. May read
+      curated views plus analytic views, and may see generated SQL.
+    clearance: CONFIDENTIAL
+    max_rows: 500
+    allow_raw_sql: false
+    show_sql: true
+    allow_cartesian: false
+    allow_reconciliation: true
+    schemas:
+      ONPREM: [CDM_RPT, CDM]
+      ATP: [ATP_RPT, ATP_CDM]
+
+  architect:
+    description: >-
+      Solution / data architects performing source-to-target mapping and lineage
+      analysis. Full metadata visibility, same data clearance as analyst.
+    clearance: CONFIDENTIAL
+    max_rows: 500
+    allow_raw_sql: false
+    show_sql: true
+    allow_cartesian: false
+    allow_reconciliation: true
+    schemas:
+      ONPREM: [CDM_RPT, CDM]
+      ATP: [ATP_RPT, ATP_CDM]
+
+  support:
+    description: >-
+      Production support triaging integration failures. Scoped to operational
+      and error/staging objects rather than full customer master data.
+    clearance: CONFIDENTIAL
+    max_rows: 500
+    allow_raw_sql: false
+    show_sql: true
+    allow_cartesian: false
+    allow_reconciliation: true
+    schemas:
+      ONPREM: [CDM_RPT, CDM_OPS]
+      ATP: [ATP_RPT, ATP_OPS]
+
+  admin:
+    description: >-
+      Break-glass platform administrators. May submit hand-written SQL, which
+      STILL passes the full guardrail chain (SELECT-only, allowlist, row cap,
+      timeout, masking). Grant sparingly and review the audit log.
+    clearance: RESTRICTED
+    max_rows: 500
+    allow_raw_sql: true
+    show_sql: true
+    allow_cartesian: true
+    allow_reconciliation: true
+    schemas:
+      ONPREM: [CDM_RPT, CDM, CDM_OPS]
+      ATP: [ATP_RPT, ATP_CDM, ATP_OPS]
+
+# Role granted when no role can be resolved. Deliberately the weakest role.
+default_role: business_user

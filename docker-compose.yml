@@ -1,0 +1,134 @@
+# =============================================================================
+# One container per database, plus an optional reconciliation container.
+# =============================================================================
+# The split is a security boundary, not just tidiness: the on-prem container
+# never receives the ATP wallet password, and the ATP container never receives
+# on-prem credentials. Only the reconciliation container holds both, so it is
+# the one to restrict most tightly.
+# =============================================================================
+
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  read_only: true               # the image is immutable at runtime
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  environment: &common-env
+    ORACLE_MCP_TRANSPORT: http
+    ORACLE_MCP_HTTP_HOST: 0.0.0.0
+    ORACLE_MCP_HTTP_PORT: 8080
+    ORACLE_MCP_POLICY_DIR: /app/config/policy
+    ORACLE_MCP_AUDIT_SINK: both
+    ORACLE_MCP_AUDIT_FILE: /app/logs/audit.jsonl
+    ORACLE_MCP_MAX_ROWS: 500
+    ORACLE_MCP_QUERY_TIMEOUT_SECONDS: 30
+    ORACLE_MCP_ROLE_BINDING_MODE: env
+    ORACLE_MCP_LOG_LEVEL: INFO
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  # ---------------------------------------------------------------------------
+  onprem-mcp:
+    <<: *common
+    container_name: oracle-mcp-onprem
+    environment:
+      <<: *common-env
+      ORACLE_MCP_PROFILE: onprem
+      ORACLE_MCP_PINNED_ROLE: ${ONPREM_PINNED_ROLE:-analyst}
+      ATP_ENABLED: "false"
+      ONPREM_ENABLED: "true"
+      ONPREM_USER: ${ONPREM_USER}
+      ONPREM_PASSWORD: ${ONPREM_PASSWORD}
+      ONPREM_HOST: ${ONPREM_HOST}
+      ONPREM_PORT: ${ONPREM_PORT:-1521}
+      ONPREM_SERVICE_NAME: ${ONPREM_SERVICE_NAME}
+      ONPREM_MODE: thin
+    ports:
+      - "127.0.0.1:8081:8080"   # loopback only; front with a gateway that authenticates
+    volumes:
+      - onprem-logs:/app/logs
+    networks: [mcp-net]
+
+  # ---------------------------------------------------------------------------
+  atp-mcp:
+    <<: *common
+    container_name: oracle-mcp-atp
+    environment:
+      <<: *common-env
+      ORACLE_MCP_PROFILE: atp
+      ORACLE_MCP_PINNED_ROLE: ${ATP_PINNED_ROLE:-analyst}
+      ORACLE_MCP_AUDIT_SINK: file      # audit table lives on-prem in this layout
+      ONPREM_ENABLED: "false"
+      ATP_ENABLED: "true"
+      ATP_USER: ${ATP_USER}
+      ATP_PASSWORD: ${ATP_PASSWORD}
+      ATP_DSN: ${ATP_DSN}
+      ATP_WALLET_DIR: /opt/oracle/wallets/atp
+      ATP_CONFIG_DIR: /opt/oracle/wallets/atp
+      ATP_WALLET_PASSWORD: ${ATP_WALLET_PASSWORD}
+      ATP_MODE: thin
+    ports:
+      - "127.0.0.1:8082:8080"
+    volumes:
+      # Read-only bind mount. The wallet is never copied into the image.
+      - ${ATP_WALLET_HOST_PATH:?set ATP_WALLET_HOST_PATH}:/opt/oracle/wallets/atp:ro
+      - atp-logs:/app/logs
+    networks: [mcp-net]
+
+  # ---------------------------------------------------------------------------
+  # Optional. Holds both credential sets, so scope its network exposure tightly
+  # and restrict it to roles with allow_reconciliation: true.
+  reconciliation-mcp:
+    <<: *common
+    container_name: oracle-mcp-reconciliation
+    profiles: ["reconciliation"]
+    environment:
+      <<: *common-env
+      ORACLE_MCP_PROFILE: both
+      ORACLE_MCP_PINNED_ROLE: ${RECON_PINNED_ROLE:-support}
+      ONPREM_ENABLED: "true"
+      ONPREM_USER: ${ONPREM_USER}
+      ONPREM_PASSWORD: ${ONPREM_PASSWORD}
+      ONPREM_HOST: ${ONPREM_HOST}
+      ONPREM_PORT: ${ONPREM_PORT:-1521}
+      ONPREM_SERVICE_NAME: ${ONPREM_SERVICE_NAME}
+      ATP_ENABLED: "true"
+      ATP_USER: ${ATP_USER}
+      ATP_PASSWORD: ${ATP_PASSWORD}
+      ATP_DSN: ${ATP_DSN}
+      ATP_WALLET_DIR: /opt/oracle/wallets/atp
+      ATP_CONFIG_DIR: /opt/oracle/wallets/atp
+      ATP_WALLET_PASSWORD: ${ATP_WALLET_PASSWORD}
+    ports:
+      - "127.0.0.1:8083:8080"
+    volumes:
+      - ${ATP_WALLET_HOST_PATH:?set ATP_WALLET_HOST_PATH}:/opt/oracle/wallets/atp:ro
+      - recon-logs:/app/logs
+    networks: [mcp-net]
+
+volumes:
+  onprem-logs:
+  atp-logs:
+  recon-logs:
+
+networks:
+  mcp-net:
+    driver: bridge
+
+# =============================================================================
+# Production note
+# =============================================================================
+# Compose environment variables are visible to anyone who can run
+# `docker inspect`. For production use Docker secrets, Kubernetes secrets with
+# a CSI driver, or inject at runtime from OCI Vault / HashiCorp Vault.
+# =============================================================================

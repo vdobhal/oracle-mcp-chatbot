@@ -1,0 +1,30 @@
+.venv/
+venv/
+.pydeps/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Never commit secrets or wallets
+.env
+.env.*
+!.env.example
+wallets/
+*.sso
+*.pem
+*.p12
+*.jks
+cwallet.*
+ewallet.*
+tnsnames.ora
+sqlnet.ora
+
+# Local audit output
+logs/
+audit/*.jsonl
+
+# OS cruft
+.DS_Store
+Thumbs.db
