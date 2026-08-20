@@ -1,8 +1,11 @@
 # Test plan
 
-164 automated tests run without an Oracle instance. `FakeConnection` and
+215 automated tests run without an Oracle instance. `FakeConnection` and
 `FakeDictionary` stand in for the driver, so the guardrail, masking, RBAC,
 discovery and audit paths are all exercised deterministically in a few seconds.
+
+This is what the suite covers and why. For exercising a *running* deployment
+against the real databases, see [testing.md](testing.md).
 
 Tests run against the fixture policies in `tests/policy/` and
 `tests/policy_discovery/`, never the deployed allowlist in `config/policy/`.
@@ -22,12 +25,13 @@ pytest --cov=oracle_mcp --cov-report=term-missing
 
 | File | Tests | Covers |
 |---|---|---|
-| `test_sql_guard.py` | 62 | SELECT-only, injection, obfuscation, allowlist, clearance, row limits, joins, binds |
+| `test_sql_guard.py` | 63 | SELECT-only, injection, obfuscation, allowlist, clearance, row limits, joins, binds |
+| `test_discovery.py` | 66 | Wildcard and scoped schemas, discovered columns, inferred classification, object exclusions, domain tagging, fail-closed |
 | `test_tools.py` | 30 | Discovery tools, validate/execute trust chain, audit records, role binding |
 | `test_masking.py` | 20 | Name rules, classification masking, content scanners, Luhn, truncation |
 | `test_policy.py` | 17 | RBAC, clearance, denial wording, credential isolation, ATP wallet config |
-| `test_discovery.py` | 16 | Wildcard schemas, dictionary-discovered columns, inferred classification, fail-closed |
 | `test_reconcile.py` | 12 | Set comparison, composite keys, normalisation, tool gating |
+| `test_server.py` | 7 | Tool registration, profile gating, health check |
 | `test_server.py` | 7 | FastMCP registration, schemas, protocol round-trip, profile gating |
 
 `pytest -m security` selects the 115 tests that assert a security control directly.
