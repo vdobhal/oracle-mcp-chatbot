@@ -14,6 +14,7 @@ Layer 3 is the only one an attacker could influence through tool arguments, so
 from __future__ import annotations
 
 import functools
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol
@@ -160,6 +161,25 @@ ORACLE_INTERNAL_SCHEMAS: frozenset[str] = frozenset(
 
 
 @dataclass(frozen=True)
+class DomainRule:
+    """A business-domain label applied to discovered objects by name.
+
+    Discovery mode has no data steward assigning ``business_domain`` per object,
+    so without this every discovered object is tagged with its schema name and
+    the model has nothing to route on. Rules are evaluated in file order and the
+    first match wins, which makes the ordering meaningful: put the narrow rule
+    above the broad one it would otherwise be swallowed by.
+    """
+
+    name: str
+    description: str
+    patterns: tuple[re.Pattern[str], ...]
+
+    def matches(self, object_name: str) -> bool:
+        return any(p.search(object_name) for p in self.patterns)
+
+
+@dataclass(frozen=True)
 class DatabasePolicy:
     database: str
     display_name: str
@@ -167,7 +187,27 @@ class DatabasePolicy:
     default_schema: str
     schemas: tuple[SchemaPolicy, ...]
     allow_all_schemas: bool = False
+    discovered_schemas: frozenset[str] = frozenset()
     excluded_schemas: frozenset[str] = ORACLE_INTERNAL_SCHEMAS
+    excluded_objects: tuple[re.Pattern[str], ...] = ()
+    domains: tuple[DomainRule, ...] = ()
+
+    def is_excluded_object(self, name: str) -> bool:
+        """Whether a discovered object is hidden regardless of grants.
+
+        Applied at authorisation as well as listing. Hiding an object from
+        ``list_allowed_tables`` while still answering a query that names it
+        directly would be decoration rather than a control.
+        """
+        upper = (name or "").strip().upper()
+        return any(p.search(upper) for p in self.excluded_objects)
+
+    def domain_for(self, name: str) -> str:
+        upper = (name or "").strip().upper()
+        for rule in self.domains:
+            if rule.matches(upper):
+                return rule.name
+        return ""
 
     def schema(self, name: str) -> SchemaPolicy | None:
         target = name.strip().upper()
@@ -180,6 +220,25 @@ class DatabasePolicy:
         upper = (name or "").strip().upper()
         # C## prefixes are common-user containers in a CDB; never business data.
         return upper in self.excluded_schemas or upper.startswith("C##")
+
+    @property
+    def discovery_enabled(self) -> bool:
+        return self.allow_all_schemas or bool(self.discovered_schemas)
+
+    def is_discoverable(self, name: str) -> bool:
+        """Whether objects in this schema may be found in the data dictionary.
+
+        Naming ``discovered_schemas`` narrows discovery to exactly that list and
+        overrides ``allow_all_schemas``. That ordering matters: it means adding a
+        schema to the database later does not silently widen what the chatbot can
+        reach, which is the main risk of the open-ended wildcard.
+        """
+        upper = (name or "").strip().upper()
+        if self.is_excluded_schema(upper):
+            return False
+        if self.discovered_schemas:
+            return upper in self.discovered_schemas
+        return self.allow_all_schemas
 
     def resolve_object(self, schema: str | None, name: str) -> ObjectPolicy | None:
         sch = self.schema(schema or self.default_schema)
@@ -236,6 +295,30 @@ def load_database_policy(path: Path) -> DatabasePolicy:
             )
         )
     excluded = raw.get("excluded_schemas")
+
+    def _compile(pattern: Any, where: str) -> re.Pattern[str]:
+        try:
+            return re.compile(str(pattern).upper())
+        except re.error as exc:
+            raise ConfigurationError(
+                f"Invalid regular expression in {where} of {path.name}: "
+                f"{pattern!r} ({exc})"
+            ) from exc
+
+    excluded_objects = tuple(
+        _compile(p, "excluded_objects") for p in (raw.get("excluded_objects") or [])
+    )
+    domains = tuple(
+        DomainRule(
+            name=str(d["name"]),
+            description=str(d.get("description", "")),
+            patterns=tuple(
+                _compile(p, f"domains[{d.get('name')}].match")
+                for p in (d.get("match") or [])
+            ),
+        )
+        for d in (raw.get("domains") or [])
+    )
     return DatabasePolicy(
         database=str(raw.get("database", "")).upper(),
         display_name=str(raw.get("display_name", raw.get("database", ""))),
@@ -243,11 +326,16 @@ def load_database_policy(path: Path) -> DatabasePolicy:
         default_schema=str(raw.get("default_schema", "")).upper(),
         schemas=tuple(schemas),
         allow_all_schemas=bool(raw.get("allow_all_schemas", False)),
+        discovered_schemas=frozenset(
+            str(s).strip().upper() for s in (raw.get("discovered_schemas") or [])
+        ),
         excluded_schemas=(
             ORACLE_INTERNAL_SCHEMAS | {str(s).upper() for s in excluded}
             if excluded
             else ORACLE_INTERNAL_SCHEMAS
         ),
+        excluded_objects=excluded_objects,
+        domains=domains,
     )
 
 
@@ -394,7 +482,7 @@ class PolicyStore:
         policy = self.database(database_name)
         schema_name = (schema or policy.default_schema).strip().upper()
         obj = policy.resolve_object(schema_name, object_name)
-        if obj is None and policy.allow_all_schemas:
+        if obj is None and policy.discovery_enabled:
             obj = self._discover_object(policy, schema_name, object_name)
         if obj is None:
             raise ObjectNotAllowlistedError(
@@ -431,10 +519,14 @@ class PolicyStore:
         found. That makes the database grant the effective allowlist, which is why
         wildcard mode is only defensible against a genuinely read-only account.
         """
-        if policy.is_excluded_schema(schema_name):
+        if not policy.is_discoverable(schema_name):
+            return None
+        target = object_name.strip().upper()
+        # Checked before the dictionary lookup so an excluded object is
+        # indistinguishable from one that does not exist.
+        if policy.is_excluded_object(target):
             return None
         resolver = self._require_resolver(policy)
-        target = object_name.strip().upper()
         for name, object_type in resolver.list_objects(policy.database, schema_name):
             if name.upper() == target:
                 return ObjectPolicy(
@@ -442,7 +534,7 @@ class PolicyStore:
                     name=target,
                     object_type=object_type.upper() or "TABLE",
                     description="Discovered from the data dictionary.",
-                    business_domain=schema_name,
+                    business_domain=policy.domain_for(target) or schema_name,
                     sensitivity="INTERNAL",
                     require_filter=False,
                     columns=(),
@@ -477,11 +569,16 @@ class PolicyStore:
     def allowed_schemas(self, database_name: str, role: Role) -> list[SchemaPolicy]:
         policy = self.database(database_name)
         declared = {s.name.upper(): s for s in policy.schemas}
-        if policy.allow_all_schemas:
-            resolver = self._require_resolver(policy)
-            for name in resolver.list_schemas(policy.database):
+        if policy.discovery_enabled:
+            # A named list needs no dictionary scan; the wildcard does.
+            candidates = (
+                sorted(policy.discovered_schemas)
+                if policy.discovered_schemas
+                else self._require_resolver(policy).list_schemas(policy.database)
+            )
+            for name in candidates:
                 upper = name.upper()
-                if policy.is_excluded_schema(upper) or upper in declared:
+                if not policy.is_discoverable(upper) or upper in declared:
                     continue
                 declared[upper] = SchemaPolicy(
                     name=upper,
@@ -505,7 +602,7 @@ class PolicyStore:
             for obj in policy.iter_objects()
             if wanted is None or obj.schema == wanted
         }
-        if policy.allow_all_schemas:
+        if policy.discovery_enabled:
             # Enumerating every object in every schema would be an unbounded
             # dictionary scan, so wildcard listing is scoped to one schema.
             targets = (
@@ -515,18 +612,19 @@ class PolicyStore:
             )
             resolver = self._require_resolver(policy)
             for schema_name in targets:
-                if policy.is_excluded_schema(schema_name):
+                if not policy.is_discoverable(schema_name):
                     continue
                 for name, object_type in resolver.list_objects(policy.database, schema_name):
-                    fqn = f"{schema_name}.{name.upper()}"
-                    if fqn in objects:
+                    upper = name.upper()
+                    fqn = f"{schema_name}.{upper}"
+                    if fqn in objects or policy.is_excluded_object(upper):
                         continue
                     objects[fqn] = ObjectPolicy(
                         schema=schema_name,
-                        name=name.upper(),
+                        name=upper,
                         object_type=object_type.upper() or "TABLE",
                         description="Discovered from the data dictionary.",
-                        business_domain=schema_name,
+                        business_domain=policy.domain_for(upper) or schema_name,
                     )
         return [
             objects[fqn]

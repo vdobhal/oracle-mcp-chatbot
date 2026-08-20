@@ -30,13 +30,6 @@ _ROW_COUNT_SQL = """
     SELECT table_name, num_rows
       FROM all_tables
      WHERE owner = :owner
-       AND table_name IN (SELECT column_value FROM TABLE(:names))
-"""
-
-_ROW_COUNT_SINGLE_SQL = """
-    SELECT num_rows
-      FROM all_tables
-     WHERE owner = :owner AND table_name = :table_name
 """
 
 _COLUMNS_SQL = """
@@ -309,7 +302,7 @@ class MetadataService:
                     # scan per schema, so it is deferred to list_allowed_tables.
                     "approved_object_count": (
                         len([o for o in s.objects if o.rank <= role.clearance_rank])
-                        if s.objects or not policy.allow_all_schemas
+                        if s.objects or not policy.discovery_enabled
                         else None
                     ),
                 }
@@ -317,11 +310,16 @@ class MetadataService:
             ],
             "notes": (
                 [
-                    "This database exposes every schema the read-only account can read; "
-                    "the database grant is the effective allowlist.",
+                    (
+                        "This database exposes every schema the read-only account can "
+                        "read; the database grant is the effective allowlist."
+                        if policy.allow_all_schemas and not policy.discovered_schemas
+                        else "This database exposes a fixed set of schemas; their objects "
+                        "are discovered from the data dictionary."
+                    ),
                     "Call list_allowed_tables for a schema to see its objects.",
                 ]
-                if policy.allow_all_schemas
+                if policy.discovery_enabled
                 else []
             ),
         }
@@ -338,10 +336,12 @@ class MetadataService:
         policy = self.store.database(database_name)
         schema = policy.schema(schema_name)
         target = (schema_name or "").strip().upper()
-        allowed = role.can_see_schema(policy.database, target) and not policy.is_excluded_schema(
-            target
+        # A schema is reachable either because the YAML declares it, or because
+        # discovery covers it. Excluded schemas are never reachable.
+        reachable = (schema is not None or policy.is_discoverable(target)) and (
+            not policy.is_excluded_schema(target)
         )
-        if not allowed or (schema is None and not policy.allow_all_schemas):
+        if not role.can_see_schema(policy.database, target) or not reachable:
             raise MetadataUnavailableError(
                 f"Schema {target} is not approved for role '{role.name}' on "
                 f"{policy.display_name}.",
@@ -400,20 +400,19 @@ class MetadataService:
             return {}
 
         def _load() -> dict[str, int | None]:
-            estimates: dict[str, int | None] = {}
-            for obj in objects:
-                try:
-                    _, rows, _, _ = connection.fetch(
-                        _ROW_COUNT_SINGLE_SQL,
-                        {"owner": schema, "table_name": obj.name},
-                        max_rows=1,
-                    )
-                except Exception as exc:  # noqa: BLE001 - estimates are best effort
-                    logger.debug("Row estimate unavailable for %s: %s", obj.fqn, type(exc).__name__)
-                    continue
-                if rows:
-                    estimates[obj.name] = rows[0].get("NUM_ROWS")
-            return estimates
+            # One query for the whole schema, not one per object. A discovered
+            # schema can hold hundreds of tables, and a round trip each turns a
+            # single tool call into minutes against a remote database.
+            try:
+                _, rows, _, _ = connection.fetch(
+                    _ROW_COUNT_SQL, {"owner": schema}, max_rows=_MAX_DICTIONARY_ROWS
+                )
+            except Exception as exc:  # noqa: BLE001 - estimates are best effort
+                logger.debug("Row estimates unavailable for %s: %s", schema, type(exc).__name__)
+                return {}
+            return {
+                str(r["TABLE_NAME"]): r.get("NUM_ROWS") for r in rows if r.get("TABLE_NAME")
+            }
 
         return self._cached(("rowcounts", connection.database_name, schema), _load)
 
@@ -573,9 +572,15 @@ class MetadataService:
                 next_steps=["Retry once the database connection is restored."],
             )
 
-        def _visible(owner: str) -> bool:
-            return role.can_see_schema(policy.database, owner) and not policy.is_excluded_schema(
-                owner
+        def _visible(owner: str, object_name: str) -> bool:
+            # The dictionary search spans the whole instance, so results must be
+            # filtered back down to the schemas this policy actually exposes.
+            # Excluded objects are dropped here too; search is a discovery path
+            # like any other and must not surface what listing hides.
+            return (
+                role.can_see_schema(policy.database, owner)
+                and policy.is_discoverable(owner)
+                and not policy.is_excluded_object(object_name)
             )
 
         table_hits = [
@@ -585,18 +590,18 @@ class MetadataService:
                 "table_name": r["OBJECT_NAME"],
                 "object_type": r.get("OBJECT_TYPE", "TABLE"),
                 "business_description": "",
-                "business_domain": r["OWNER"],
+                "business_domain": policy.domain_for(str(r["OBJECT_NAME"])) or r["OWNER"],
                 "data_sensitivity": "INTERNAL",
                 "confidence_score": round(_score(terms, str(r["OBJECT_NAME"]), "", ""), 3),
             }
             for r in self.dictionary.search_objects(policy.database, terms, limit * 4)
-            if _visible(str(r.get("OWNER", "")))
+            if _visible(str(r.get("OWNER", "")), str(r.get("OBJECT_NAME", "")))
         ]
 
         column_hits = []
         for r in self.dictionary.search_columns(policy.database, terms, limit * 4):
             owner = str(r.get("OWNER", ""))
-            if not _visible(owner):
+            if not _visible(owner, str(r.get("TABLE_NAME", ""))):
                 continue
             column_name = str(r["COLUMN_NAME"])
             sensitivity = self.store.infer_column_sensitivity(column_name)
@@ -646,7 +651,7 @@ class MetadataService:
         table_hits: list[dict[str, Any]] = []
         column_hits: list[dict[str, Any]] = []
 
-        if policy.allow_all_schemas:
+        if policy.discovery_enabled:
             return self._search_dictionary(policy, terms, search_text, role, limit)
 
         for obj in self.store.allowed_objects(database_name, role):

@@ -100,13 +100,18 @@ A database policy file either names its objects or delegates to the grant.
 names each reachable object; anything else is refused no matter what the account
 was granted. Adding an object is a governance decision that goes through review.
 
-**Wildcard** is opted into with `allow_all_schemas: true`, as
-`config/policy/atp.yaml` does. Every schema the account can read becomes
-reachable, discovered live from `ALL_OBJECTS`. This gives up layer 2: the
-question of which objects exist is answered by the database grant. Layers 1, 3,
-4 and 5 still apply in full, but there is no longer an independent record that an
-object was *approved* for chatbot use rather than merely readable. Only use it
-against an account that is genuinely read-only and scoped to reporting data.
+**Wildcard** is opted into with `allow_all_schemas: true`. Every schema the
+account can read becomes reachable, discovered live from `ALL_OBJECTS`. This
+gives up layer 2: the question of which objects exist is answered by the database
+grant. Layers 1, 3, 4 and 5 still apply in full, but there is no longer an
+independent record that an object was *approved* for chatbot use rather than
+merely readable. Only use it against an account that is genuinely read-only and
+scoped to reporting data.
+
+**Scoped discovery** sits between them and is what `config/policy/atp.yaml`
+uses. `discovered_schemas` names the schemas; objects inside them are discovered.
+Naming the schemas rather than excluding the others means a schema created
+tomorrow is unreachable by default.
 
 Oracle's own schemas (`SYS`, `SYSTEM`, `AUDSYS`, `C##*` and the rest of
 `policy.ORACLE_INTERNAL_SCHEMAS`) are excluded from discovery regardless of
@@ -114,6 +119,30 @@ grants, and `excluded_schemas` in the policy file adds to that list.
 
 Discovery fails closed. An unreachable data dictionary returns nothing, which
 reads as "object not found" and denies the request.
+
+### Object exclusions and domain tagging
+
+Two optional keys shape what discovery returns. Both take regular expressions
+matched against the bare object name, upper-cased.
+
+`excluded_objects` hides matching objects. The check runs at authorisation as
+well as listing and search, so an excluded object is refused when named directly
+rather than merely omitted from the catalogue — hiding it from `list_allowed_tables`
+alone would be decoration, since a model can guess a name from a sibling. This is
+aimed at dead weight, not sensitive data: use grants and clearance for the latter.
+
+`domains` assigns `business_domain` to discovered objects, which otherwise
+inherit their schema name and give the agent nothing to route on. Rules are
+evaluated in file order and the first match wins, so a narrow rule must sit above
+the broad one that would swallow it. Ordering is a modelling decision, not a
+detail: on ATP the `EIM` rule is deliberately last, because EIM is an integration
+boundary that overlaps the install base, service contract and product groups, and
+putting it first would relabel objects with the boundary they crossed instead of
+the domain a user would ask about.
+
+Neither key is a security control on its own. An excluded object is still
+readable by the database account; the exclusion only stops this chatbot from
+offering or accepting it.
 
 ### Columns may be declared or inferred
 

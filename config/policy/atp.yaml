@@ -1,39 +1,161 @@
 # =============================================================================
 # ORACLE ATP - object allowlist
 # =============================================================================
-# This database runs in wildcard mode: every schema the connected account can
-# read is reachable, discovered live from the data dictionary.
+# This database exposes a fixed set of schemas, and discovers the objects inside
+# them from the data dictionary. That is the middle of three modes:
 #
-# Read this before changing it. Wildcard mode gives up layer 2 of the access
-# model. The remaining layers still apply - role clearance, the SQL guardrails,
-# row caps, timeouts and output masking - but the question of *which objects
-# exist at all* is answered by the database grant rather than by this file.
+#   schemas:             declared schemas, declared objects   (strictest)
+#   discovered_schemas:  declared schemas, discovered objects (this file)
+#   allow_all_schemas:   every readable schema                (widest)
 #
-# That makes the grant on ATP_USER load-bearing in a way it is not on On-Prem.
-# It is only defensible while that account is genuinely read-only and scoped to
-# reporting data. Verify with:
+# The scope is deliberately narrow. NAPP_READONLY can read 26 schemas, but most
+# are Oracle tooling rather than business data - APEX, ORDS, RMAN$CATALOG,
+# GGADMIN, OML$MODELS, Visual Builder tenants, and Oracle's SH/SSB sample
+# schemas. Exposing those would widen the blast radius and degrade answer
+# quality, since the model would offer RMAN catalogs as candidate business data.
+#
+# Naming the schemas here rather than excluding the other 24 matters: a schema
+# created on this instance tomorrow is unreachable by default instead of
+# appearing automatically.
+#
+# Object-level review is still not happening on this database - anything inside
+# these two schemas is reachable. That remains weaker than On-Prem, where every
+# object is named. Verify the account is genuinely read-only:
 #
 #   SELECT * FROM user_sys_privs;      -- expect CREATE SESSION and little else
 #   SELECT * FROM user_role_privs;     -- DWROLE should NOT appear
-#
-# To go back to strict allowlisting, set allow_all_schemas to false and list
-# schemas and objects the way config/policy/onprem.yaml does.
 database: ATP
 display_name: Oracle ATP
 description: >-
   Autonomous Transaction Processing target of the On-Prem -> ATP integration.
-  All schemas readable by the chatbot account are exposed.
+  Scoped to the three NetApp ERP application schemas.
 
-allow_all_schemas: true
+allow_all_schemas: false
 
-# Oracle's own schemas are excluded from discovery no matter what the account
-# was granted; policy.ORACLE_INTERNAL_SCHEMAS covers the standard set and
-# anything listed here is excluded on top of it.
+# Objects in these schemas are discovered from the data dictionary.
+discovered_schemas:
+  - NAPPERP
+  - NAPPERPADM
+  - NAPPERPDS
+
+# Oracle's own schemas are excluded no matter what the account was granted;
+# policy.ORACLE_INTERNAL_SCHEMAS covers the standard set, and anything listed
+# here is excluded on top of it.
 excluded_schemas: []
 
-# Objects referenced without a schema prefix resolve against the connected
-# account's own schema.
-default_schema: NAPP_READONLY
+# Objects referenced without a schema prefix resolve here.
+default_schema: NAPPERPDS
+
+# ---------------------------------------------------------------------------
+# Object exclusions
+# ---------------------------------------------------------------------------
+# Regular expressions matched against the bare object name, upper-cased. An
+# object matching any of these is treated as non-existent: hidden from
+# list_allowed_tables and search_data_dictionary, and refused by name at
+# authorisation. Hiding it from listing alone would be decoration.
+#
+# These target dead weight rather than sensitive data. NAPPERP is 54% staging
+# and scratch, and the biggest trap is near-identical names holding wildly
+# different volumes - NAPP_PLM_CO_ITEM_STG has 26,805 rows while its _ARCHIVE
+# has 9.6M and _BKP1 has 6M. A model picking on name similarity answers with
+# the wrong magnitude and no signal that it did.
+excluded_objects:
+  # 22 dated reconciliation dumps, GTM_CDM_MISMATCH_DUMP_18DEC .. _22MAY,
+  # ~17M rows of one-off investigation output that outlived its purpose.
+  - "_DUMP_"
+  - "_MISMATCH_DUMP"
+  # Hand-cut backups: _BKP, _BKP1, _BK1217, _BKP_29NOV2025.
+  - "_BKP"
+  - "_BK[0-9]"
+  # Date-stamped copies: _29NOV2025, _29NOV25.
+  - "_[0-9]{1,2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[0-9]{0,4}$"
+  # Developer scratch.
+  - "^TMP_"
+  - "^TEMP_"
+  - "^TOAD_"
+  # Oracle materialized-view refresh artifacts (RUPD$_NAPP_CX_*). Internal
+  # plumbing that mirrors a real table during refresh; never an answer.
+  - "^RUPD\\$"
+
+# ---------------------------------------------------------------------------
+# Business domains
+# ---------------------------------------------------------------------------
+# Discovered objects have no steward-assigned business_domain, so without these
+# every one of NAPPERP's 1,491 objects is tagged with its schema name and the
+# agent has nothing to route a question on. First match wins, so order matters.
+#
+# Patterns are anchored where the unanchored form over-matches. NAPP_IB_ is
+# anchored because NAPP_IB.* also catches the 23 NAPP_IBP_ objects, which are
+# Integrated Business Planning - supplier forecasts, safety stocks, hub
+# inventory - and have nothing to do with install base.
+# NAPP_CX_ is a source-system prefix, not a domain: it is the Oracle Fusion CX
+# pillar, and its 42 objects span customer master, assets, subscriptions and
+# contracts. So the three rules that carve non-customer objects out of NAPP_CX_
+# are ordered ABOVE Customer. Without that, NAPP_CX_CSE_ASSETS_B - 34.3M rows of
+# install base - would be labelled Customer purely because of its prefix.
+domains:
+  - name: Install Base
+    description: >-
+      Asset and instance records. NAPPERP holds the EIM/SAP sync staging
+      (NAPP_IB_); NAPPERPDS holds the Fusion asset extract NAPP_CX_CSE_ASSETS_B,
+      which at 34.3M rows is the largest object in the schema.
+    match:
+      - "^NAPP_IB_"
+      - "^NAPP_CX_CSE_ASSETS"
+
+  - name: Service Contract
+    description: >-
+      Service contract headers, lines, warranty and PBH on the EIM and SAP feeds
+      (NAPPERP), plus the Fusion contract and OKC extracts (NAPPERPDS).
+      Contract-party objects land here rather than Customer: they describe a
+      party's role on a contract, not the party itself.
+    match:
+      - "^NAPP_SM_"
+      - "^NAPP_SC_TO_"
+      - "^NAPP_CX_CONTRACT"
+      - "^NAPP_CX_OKC_"
+
+  - name: Product
+    description: >-
+      Item and part attributes. NAPP_PD_ is only the three EIM PDH staging
+      tables; the substance is in NAPP_PLM_ (NAPPERP) and the Fusion OSS product
+      and subscription extracts (NAPPERPDS).
+    match:
+      - "^NAPP_PD_"
+      - "^NAPP_PLM_"
+      - "^NAPP_CX_OSS_"
+
+  - name: Customer
+    description: >-
+      Two parallel representations live in NAPPERPDS and they are not
+      interchangeable. HZ_* are Oracle TCA views - the canonical Fusion model,
+      with HZ_PARTIES as party master and HZ_CUST_ACCOUNTS as account master.
+      NAPP_CX_*EXTRACTPVO are BI extract snapshots of the same data, materialised
+      as tables, and carry whatever staleness the last extract left. Prefer HZ_
+      for "what is true now" and the PVOs for volume or point-in-time work.
+      NAPPERP additionally holds the GTM/CDM sync. NAPP_ITC_CUSTOM_INVOICES_* is
+      custom invoices, not customer data, and is deliberately not matched.
+    match:
+      - "^HZ_"
+      - "^NAPP_CX_"
+      - "^NAPP_CDM_"
+      - "^NAPP_GTM_CDM_"
+      - "CUSTOMER"
+      - "^NAPP_FSCM_AR_CUST"
+      - "^NAPP_FSCM_CUSTPROFILE"
+
+  # Listed last on purpose. EIM is an integration boundary, not a peer domain:
+  # 9 of its 23 objects are also NAPP_IB_, 8 are also NAPP_SM_, and all 3
+  # NAPP_PD_ tables are EIM. Ordering it above the others would relabel a third
+  # of them and lose the domain the user actually asked about. It answers "how
+  # did this sync from EIM", not "what does EIM know".
+  - name: EIM Integration
+    description: >-
+      Sync jobs, control tables and error staging on the EIM boundary. Objects
+      that also belong to a business domain are labelled with that domain
+      instead; this catches only what is purely integration plumbing.
+    match:
+      - "EIM"
 
 # No schemas are declared. Discovered objects carry no curated business
 # description, and their columns are classified from the naming rules in

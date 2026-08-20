@@ -1,0 +1,13 @@
+# Fixture: the middle discovery tier - a fixed schema list whose objects are
+# still read from the data dictionary. Mirrors the deployed config/policy/atp.yaml.
+database: ATP
+display_name: Oracle ATP
+description: Scoped-discovery fixture used by tests/test_discovery.py.
+
+allow_all_schemas: false
+discovered_schemas:
+  - NAPP_READONLY
+  - SALES
+excluded_schemas: [LEGACY_STAGING]
+default_schema: NAPP_READONLY
+schemas: []
