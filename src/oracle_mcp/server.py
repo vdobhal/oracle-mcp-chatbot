@@ -337,7 +337,28 @@ def _healthcheck(settings: Settings) -> int:
         failures += 0 if ok else 1
     for database_name, policy in service.store.databases.items():
         objects = sum(len(s.objects) for s in policy.schemas)
-        print(f"{database_name}: {len(policy.schemas)} schema(s), {objects} approved object(s)")
+        if policy.discovery_enabled:
+            # Counting only declared objects reports "0 schema(s), 0 approved
+            # object(s)" for a database in discovery mode, which reads as broken
+            # when it is in fact working and wide open.
+            scope = (
+                ", ".join(sorted(policy.discovered_schemas))
+                if policy.discovered_schemas
+                else "every readable schema"
+            )
+            print(f"{database_name}: discovery mode over {scope}")
+            if policy.excluded_objects:
+                print(f"{database_name}: {len(policy.excluded_objects)} object exclusion(s)")
+            if policy.domains:
+                names = ", ".join(d.name for d in policy.domains)
+                print(f"{database_name}: domains {names}")
+            if objects:
+                print(f"{database_name}: {objects} additionally declared object(s)")
+        else:
+            print(
+                f"{database_name}: {len(policy.schemas)} schema(s), "
+                f"{objects} approved object(s)"
+            )
     print(f"roles: {', '.join(sorted(service.store.roles))}")
     service.registry.close_all()
     return 1 if failures else 0
