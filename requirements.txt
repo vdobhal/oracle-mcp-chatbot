@@ -4,4 +4,8 @@ sqlglot>=30.0.0,<31.0.0
 pydantic>=2.7,<3.0
 pydantic-settings>=2.3,<3.0
 python-dotenv>=1.0,<2.0
+# TLS trust anchors. Pulled in transitively, but named explicitly because
+# python-oracledb needs it to verify ATP's certificate on installations whose
+# Python ships no CA bundle of its own (common with the macOS python.org build).
+certifi>=2024.2.2
 PyYAML>=6.0,<7.0

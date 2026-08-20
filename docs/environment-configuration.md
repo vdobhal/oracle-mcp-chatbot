@@ -94,7 +94,46 @@ SELECT privilege FROM user_sys_privs;
 SELECT granted_role FROM user_role_privs;   -- DWROLE should NOT appear
 ```
 
-### 2. `ssl_server_dn_match=no` disables certificate verification
+### 2a. RESOLVED — ATP failed TLS because Python had no CA bundle
+
+Worth recording because the error message pointed the wrong way. The connection
+failed with:
+
+```
+DPY-6005: cannot connect to database
+[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain
+```
+
+That reads like an interception proxy or a bad server certificate. It was
+neither. `openssl s_client` verified the chain cleanly — a genuine Oracle
+certificate signed by DigiCert Global Root G2. The problem was local:
+
+```
+openssl cafile : .../Python.framework/Versions/3.13/etc/openssl/cert.pem  exists: False
+default ctx CA count: 0
+```
+
+The macOS python.org build ships no CA bundle until `Install
+Certificates.command` is run. With an empty trust store OpenSSL cannot anchor
+any chain, so it describes the unanchored root as "self-signed". Any TLS from
+this interpreter would have failed the same way.
+
+Fixed by pointing OpenSSL at certifi's bundle via `SSL_CERT_FILE` in `.env`.
+The system-wide alternative is running the installer once:
+
+```bash
+"/Applications/Python 3.13/Install Certificates.command"
+```
+
+Diagnostic worth keeping, since the symptom is easy to misread:
+
+```bash
+python3 -c "import ssl; print(len(ssl.create_default_context().get_ca_certs()))"
+```
+
+`0` means the trust store is empty and the fault is local, not the server.
+
+### 2b. `ssl_server_dn_match=no` disables certificate verification
 
 The ATP descriptor sets `(security=(ssl_server_dn_match=no))`. This tells the
 driver not to check that the certificate presented actually belongs to the host
