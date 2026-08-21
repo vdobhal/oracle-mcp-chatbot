@@ -227,6 +227,15 @@ class Settings(BaseSettings):
     audit_table: str = "CHATBOT_AUDIT.CHATBOT_AUDIT_LOG"
     log_level: str = "INFO"
 
+    # Standalone chat UI (python -m oracle_mcp.chat). The LLM is OpenAI-compatible
+    # so a corporate gateway works the same as api.openai.com.
+    chat_host: str = "127.0.0.1"
+    chat_port: int = Field(default=8500, ge=1, le=65535)
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: SecretStr = SecretStr("")
+    llm_model: str = "gpt-4o"
+    llm_timeout_seconds: int = Field(default=120, ge=10, le=600)
+
     @property
     def active_profiles(self) -> list[ProfileName]:
         return ["onprem", "atp"] if self.profile == "both" else [self.profile]  # type: ignore[list-item]

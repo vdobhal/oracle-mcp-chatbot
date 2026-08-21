@@ -160,6 +160,18 @@ credentials, so it is also the one that works in CI.
 
 ---
 
+## 5. Standalone browser UI (not Cursor)
+
+Same Oracle tools as the MCP server, in a browser. Requires `ORACLE_MCP_LLM_API_KEY`.
+See [chat-ui.md](chat-ui.md).
+
+```bash
+python3 -m oracle_mcp.chat --profile both
+# open http://127.0.0.1:8500
+```
+
+---
+
 ## Reading the audit trail
 
 Every call is written as a JSON line, including the refusals — a rejected query
