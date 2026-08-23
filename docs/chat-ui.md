@@ -14,8 +14,9 @@ export PYTHONPATH=.pydeps:src
 
 pip install --target .pydeps fastapi uvicorn   # once
 
-# Set an LLM key (OpenAI or any OpenAI-compatible gateway)
-# ORACLE_MCP_LLM_API_KEY=...
+# Set an LLM key in .env (OpenAI or any OpenAI-compatible gateway).
+# Paste the real key -- a literal placeholder is rejected at startup.
+# ORACLE_MCP_LLM_API_KEY=sk-your-real-key
 # ORACLE_MCP_LLM_BASE_URL=https://api.openai.com/v1
 # ORACLE_MCP_LLM_MODEL=gpt-4o
 
@@ -45,9 +46,14 @@ activity is shown as chips under each answer (which tools fired).
 ## LLM
 
 The UI process does not contain a model. It calls an OpenAI-compatible
-`/chat/completions` endpoint. If `ORACLE_MCP_LLM_API_KEY` is empty, the page
-still loads and health works, but sending a message returns HTTP 503 with that
-instruction.
+`/chat/completions` endpoint. If `ORACLE_MCP_LLM_API_KEY` is empty *or is still a
+template placeholder such as `...`*, the page still loads and health works, but
+sending a message returns HTTP 503 explaining which of the two it is. `GET
+/api/health` reports the same under `llm_detail`, along with `env_files_checked`
+so you can confirm which `.env` was read.
+
+`.env` is located relative to the repository root, not the working directory, so
+starting the server from a parent folder still picks up credentials.
 
 A private gateway is fine: set `ORACLE_MCP_LLM_BASE_URL` to its base (or to the
 full `.../chat/completions` URL).

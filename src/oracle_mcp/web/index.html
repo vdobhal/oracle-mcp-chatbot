@@ -227,7 +227,7 @@
       document.getElementById("tools").innerHTML = (h.tools || []).map(t => "<li>" + t + "</li>").join("");
       document.getElementById("banner").textContent = h.llm_configured
         ? "Ready. Questions are answered from the databases above."
-        : "UI is up, but set ORACLE_MCP_LLM_API_KEY in .env before chatting.";
+        : "UI is up, but chat is disabled. " + (h.llm_detail || "");
     }
 
     function add(role, text, extraClass) {

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from .agent import ChatAgent
 from .server import build_service, configure_logging
-from .settings import Settings, get_settings
+from .settings import Settings, env_file_candidates, get_settings
 
 logger = logging.getLogger("oracle_mcp.chat")
 _WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -35,7 +35,7 @@ class ChatRequest(BaseModel):
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     service = build_service(settings)
-    llm_ready = bool(settings.llm_api_key.get_secret_value())
+    llm_ready = settings.llm_configured
     agent = ChatAgent(service, settings) if llm_ready else None
 
     @asynccontextmanager
@@ -71,6 +71,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "user_id": settings.pinned_user_id,
             "llm_configured": llm_ready,
             "llm_model": settings.llm_model if llm_ready else None,
+            "llm_detail": settings.llm_status(),
+            "env_files_checked": [str(p) for p in env_file_candidates()],
             "reconciliation": settings.reconciliation_enabled,
             "max_rows": settings.max_rows,
             "tools": (agent.tool_names() if agent else []),
@@ -79,11 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/chat")
     def chat(body: ChatRequest) -> dict[str, Any]:
         if agent is None:
-            raise HTTPException(
-                503,
-                "No LLM is configured. Set ORACLE_MCP_LLM_API_KEY (and optionally "
-                "ORACLE_MCP_LLM_BASE_URL / ORACLE_MCP_LLM_MODEL) in .env.",
-            )
+            raise HTTPException(503, settings.llm_status())
         try:
             return agent.ask(body.message.strip(), body.history)
         except RuntimeError as exc:
@@ -111,10 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         settings = settings.model_copy(update=updates)
 
     configure_logging(settings.log_level)
-    if not settings.llm_api_key.get_secret_value():
-        logger.warning(
-            "ORACLE_MCP_LLM_API_KEY is empty: the UI will load but chat will return 503."
-        )
+    if not settings.llm_configured:
+        logger.warning("Chat disabled: %s", settings.llm_status())
 
     try:
         import uvicorn
