@@ -21,12 +21,21 @@ between could swap the statement.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import OrderedDict
 from typing import Any
 
 from .audit import AuditLogger, build_event, new_request_id, sanitize_free_text
 from .db import ConnectionRegistry, OracleConnection
+from .dq import (
+    DqHistory,
+    calculate_metrics,
+    recommended_actions,
+    render_markdown,
+    trend_from,
+    utc_now,
+)
 from .errors import AccessDeniedError, ChatbotError, SqlValidationError
 from .explain import (
     data_quality_flags,
@@ -104,6 +113,7 @@ class ToolService:
             allow_cartesian=settings.allow_cartesian,
         )
         self.approvals = ApprovalCache()
+        self.dq_history = DqHistory(settings.dq_history_file)
 
     # ---- identity ----------------------------------------------------------
 
@@ -423,6 +433,234 @@ class ToolService:
                 next_steps=["Pass every bind variable in bind_parameters."],
             )
         return {k: v for k, v in supplied.items() if k in required}
+
+    # ---- EIM data-quality tools --------------------------------------------
+
+    def list_active_dq_rules(
+        self, user_role: str | None = None
+    ) -> dict[str, Any]:
+        """Read the governed ACTIVE rule catalog, including reference checkpoints."""
+        request_id = new_request_id()
+        role: Role | None = None
+        try:
+            role, user_id = self._identity(user_role)
+            database = self.settings.dq_catalog_database.upper()
+            table = self._dq_catalog_fqn()
+            sql = (
+                "SELECT RULE_ID, RULE_NAME, DIMENSION, ATTRIBUTE, DQ_RULE, "
+                "SEVERITY AS CATALOG_SEVERITY, CONTROL_TYPE, AUTOMATION_CANDIDATE, "
+                "IMPLEMENTATION_STATUS, REFERENCE_CHECKPOINT "
+                f"FROM {table} "
+                "WHERE UPPER(TRIM(RULE_STATUS)) = 'ACTIVE' "
+                f"FETCH FIRST {self.settings.dq_max_rules} ROWS ONLY"
+            )
+            payload = self._run_internal_select(database, sql, role)
+            rules = payload["rows"]
+            self._audit(
+                request_id,
+                "list_active_dq_rules",
+                database,
+                user_id,
+                role,
+                "SUCCESS",
+                sql=sql,
+                referenced_objects=[table],
+                row_count=len(rules),
+                response_summary=f"{len(rules)} active DQ rule(s)",
+            )
+            return self._ok(
+                {
+                    "catalog_database": database,
+                    "catalog_object": table,
+                    "active_rule_count": len(rules),
+                    "rules": rules,
+                    "reference_checkpoint_included": True,
+                    "notes": [
+                        "Only rules with RULE_STATUS='ACTIVE' are returned.",
+                        "DQ_RULE and REFERENCE_CHECKPOINT are context, not trusted executable SQL.",
+                    ],
+                },
+                request_id,
+            )
+        except ChatbotError as exc:
+            return self._handle(
+                exc,
+                request_id,
+                "list_active_dq_rules",
+                self.settings.dq_catalog_database,
+                user_role,
+                role=role,
+            )
+
+    def execute_data_quality_rule(
+        self,
+        rule_id: str,
+        target_database: str,
+        total_records_sql: str,
+        failed_records_sql: str,
+        user_role: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute one ACTIVE rule using two independently validated count queries."""
+        request_id = new_request_id()
+        role: Role | None = None
+        resolved_user = user_id or "unknown"
+        try:
+            role, resolved_user = self._identity(user_role, user_id)
+            clean_rule_id = sanitize_free_text(rule_id, 200)
+            if not clean_rule_id:
+                raise SqlValidationError("rule_id is required.")
+            rule = self._active_dq_rule(clean_rule_id, role)
+            if rule is None:
+                raise AccessDeniedError(
+                    f"DQ rule {clean_rule_id!r} is not ACTIVE in the governed catalog.",
+                    next_steps=["Call list_active_dq_rules and choose an ACTIVE rule."],
+                )
+
+            database = target_database.upper()
+            total, total_objects = self._execute_dq_metric(
+                database, total_records_sql, "TOTAL_RECORDS", role
+            )
+            failed, failed_objects = self._execute_dq_metric(
+                database, failed_records_sql, "FAILED_RECORDS", role
+            )
+            try:
+                metrics = calculate_metrics(total, failed)
+            except ValueError as exc:
+                raise SqlValidationError(str(exc)) from exc
+
+            previous = self.dq_history.previous(database, clean_rule_id)
+            trend = trend_from(metrics["failure_percentage"], previous)
+            result = {
+                "execution_timestamp": utc_now(),
+                "database": database,
+                "rule_id": clean_rule_id,
+                "rule_name": rule.get("RULE_NAME") or clean_rule_id,
+                "dimension": rule.get("DIMENSION") or "",
+                "attribute": rule.get("ATTRIBUTE") or "",
+                "dq_rule": rule.get("DQ_RULE") or "",
+                "reference_checkpoint": rule.get("REFERENCE_CHECKPOINT") or "",
+                **metrics,
+                "trend": trend,
+            }
+            result["recommended_actions"] = recommended_actions(result)
+            self.dq_history.append(result)
+            report = render_markdown([result], result["execution_timestamp"])
+
+            objects = sorted(set(total_objects + failed_objects))
+            self._audit(
+                request_id,
+                "execute_data_quality_rule",
+                database,
+                resolved_user,
+                role,
+                "SUCCESS",
+                sql=failed_records_sql,
+                validation_status="APPROVED",
+                referenced_objects=objects,
+                row_count=total,
+                response_summary=(
+                    f"rule={clean_rule_id} failed={failed} "
+                    f"failure_rate={metrics['failure_percentage']:.2f}%"
+                ),
+            )
+            return self._ok(
+                {
+                    "result": result,
+                    "dq_score": metrics["pass_percentage"],
+                    "deterioration_detected": trend["deteriorated"],
+                    "referenced_objects": objects,
+                    "report_markdown": report,
+                },
+                request_id,
+            )
+        except ChatbotError as exc:
+            return self._handle(
+                exc,
+                request_id,
+                "execute_data_quality_rule",
+                target_database,
+                user_role,
+                user_id=resolved_user,
+                role=role,
+                sql=failed_records_sql,
+            )
+
+    def _dq_catalog_fqn(self) -> str:
+        schema = self.settings.dq_catalog_schema.upper()
+        table = self.settings.dq_catalog_table.upper()
+        identifier = re.compile(r"^[A-Z][A-Z0-9_$#]*$")
+        if not identifier.fullmatch(schema) or not identifier.fullmatch(table):
+            raise SqlValidationError("The configured DQ catalog object name is invalid.")
+        return f"{schema}.{table}"
+
+    def _run_internal_select(
+        self,
+        database: str,
+        sql: str,
+        role: Role,
+        binds: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        validation = self.guard.validate(sql, database_name=database, role=role)
+        if not validation.approved:
+            raise SqlValidationError(
+                "Internal DQ SQL failed the same read-only policy used for MCP queries: "
+                + "; ".join(error.message for error in validation.validation_errors)
+            )
+        connection = self.registry.get(database)
+        return self._run_query(validation, connection, role, binds, database)
+
+    def _active_dq_rule(self, rule_id: str, role: Role) -> dict[str, Any] | None:
+        database = self.settings.dq_catalog_database.upper()
+        table = self._dq_catalog_fqn()
+        sql = (
+            "SELECT RULE_ID, RULE_NAME, DIMENSION, ATTRIBUTE, DQ_RULE, "
+            "SEVERITY AS CATALOG_SEVERITY, CONTROL_TYPE, AUTOMATION_CANDIDATE, "
+            "IMPLEMENTATION_STATUS, REFERENCE_CHECKPOINT "
+            f"FROM {table} "
+            "WHERE UPPER(TRIM(RULE_STATUS)) = 'ACTIVE' AND RULE_ID = :rule_id "
+            "FETCH FIRST 2 ROWS ONLY"
+        )
+        payload = self._run_internal_select(database, sql, role, {"rule_id": rule_id})
+        rows = payload["rows"]
+        if len(rows) > 1:
+            raise SqlValidationError(
+                f"Rule ID {rule_id!r} is duplicated in the ACTIVE rule catalog."
+            )
+        return rows[0] if rows else None
+
+    def _execute_dq_metric(
+        self,
+        database: str,
+        sql: str,
+        expected_alias: str,
+        role: Role,
+    ) -> tuple[int, list[str]]:
+        validation = self.guard.validate(sql, database_name=database, role=role)
+        if not validation.approved:
+            raise SqlValidationError(
+                f"{expected_alias} SQL was rejected: "
+                + "; ".join(error.message for error in validation.validation_errors)
+            )
+        if not validation.is_aggregate:
+            raise SqlValidationError(
+                f"{expected_alias} SQL must be an aggregate SELECT returning one count."
+            )
+        payload = self._run_query(
+            validation, self.registry.get(database), role, None, database
+        )
+        rows = payload["rows"]
+        if len(rows) != 1 or expected_alias not in rows[0]:
+            raise SqlValidationError(
+                f"The query must return exactly one row with alias {expected_alias}."
+            )
+        try:
+            value = int(rows[0][expected_alias])
+        except (TypeError, ValueError) as exc:
+            raise SqlValidationError(
+                f"{expected_alias} must be a whole-number count."
+            ) from exc
+        return value, validation.referenced_objects
 
     # ---- tool 7 ------------------------------------------------------------
 

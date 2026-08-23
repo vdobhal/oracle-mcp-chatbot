@@ -92,7 +92,8 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             "search_data_dictionary before writing SQL. Every statement must pass "
             "validate_sql, and execute_readonly_sql must be given exactly the "
             "rewritten_safe_sql that validate_sql returned. Never invent object or "
-            "column names."
+            "column names. For EIM data quality, call list_active_dq_rules first and "
+            "execute only ACTIVE rules through execute_data_quality_rule."
         ),
     )
 
@@ -214,6 +215,46 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             request_id or None,
             bind_parameters,
             user_role or None,
+        )
+
+    @mcp.tool
+    def list_active_dq_rules(user_role: str = "") -> dict[str, Any]:
+        """List governed EIM data-quality rules whose RULE_STATUS is ACTIVE.
+
+        Returns DQ_RULE and REFERENCE_CHECKPOINT as business context. Neither
+        field is executed as SQL; all executable statements must independently
+        pass the read-only SQL guard.
+        """
+        return service.list_active_dq_rules(user_role or None)
+
+    @mcp.tool
+    def execute_data_quality_rule(
+        rule_id: str,
+        target_database: str,
+        total_records_sql: str,
+        failed_records_sql: str,
+        user_role: str = "",
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        """Evaluate one ACTIVE EIM DQ rule and return metrics plus a Markdown report.
+
+        Both SQL inputs must be aggregate SELECT statements over approved objects.
+        ``total_records_sql`` must return one integer aliased TOTAL_RECORDS;
+        ``failed_records_sql`` must return one integer aliased FAILED_RECORDS.
+        INSERT, UPDATE, DELETE, MERGE, TRUNCATE, DDL, PL/SQL, database links and
+        unapproved objects are rejected before Oracle sees the statement.
+
+        The result includes total and failed records, pass/failure percentages,
+        severity, previous-run trend, corrective actions, and all required report
+        sections.
+        """
+        return service.execute_data_quality_rule(
+            rule_id,
+            target_database,
+            total_records_sql,
+            failed_records_sql,
+            user_role or None,
+            user_id or None,
         )
 
     @mcp.tool

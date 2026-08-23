@@ -304,13 +304,14 @@ def test_naming_schemas_overrides_the_wildcard(discovery_policy_dir: Path):
 # ---- the deployed configuration -------------------------------------------
 
 
-def test_deployed_onprem_exposes_exactly_the_five_agreed_objects(deployed_policy_dir: Path):
+def test_deployed_onprem_exposes_exactly_the_governed_objects(deployed_policy_dir: Path):
     clear_policy_cache()
     store = PolicyStore(deployed_policy_dir, {"ONPREM": "onprem.yaml"})
     policy = store.database("ONPREM")
 
     assert policy.allow_all_schemas is False
     assert sorted(o.fqn for o in policy.iter_objects()) == [
+        "EIM.EIM_DQ_RULES_LOOKUP",
         "EIM.EIM_DRM_PRODUCT_DETAILS",
         "EIM.EIM_PR_IB_LATEST",
         "EIM.EIM_PR_ROLES",

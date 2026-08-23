@@ -117,6 +117,35 @@ def openai_tool_schemas(*, reconciliation: bool) -> list[dict[str, Any]]:
             required=["database_name", "validated_sql"],
         ),
         _fn(
+            "list_active_dq_rules",
+            "List governed EIM data-quality rules whose RULE_STATUS is ACTIVE, including "
+            "DQ_RULE and REFERENCE_CHECKPOINT context.",
+            {},
+        ),
+        _fn(
+            "execute_data_quality_rule",
+            "Evaluate one ACTIVE EIM DQ rule using two approved aggregate SELECTs. "
+            "Returns exact metrics, severity, trend, actions, and a Markdown report.",
+            {
+                "rule_id": {"type": "string"},
+                "target_database": db,
+                "total_records_sql": {
+                    "type": "string",
+                    "description": "Aggregate SELECT returning one integer as TOTAL_RECORDS.",
+                },
+                "failed_records_sql": {
+                    "type": "string",
+                    "description": "Aggregate SELECT returning one integer as FAILED_RECORDS.",
+                },
+            },
+            required=[
+                "rule_id",
+                "target_database",
+                "total_records_sql",
+                "failed_records_sql",
+            ],
+        ),
+        _fn(
             "explain_query_result",
             "Profile a result set into facts for the business-language answer. "
             "Use these figures verbatim.",
@@ -268,7 +297,7 @@ class ChatAgent:
                 "error_code": "UNKNOWN_TOOL",
                 "message": f"Tool {name!r} is not available on this server.",
             }
-        if name == "execute_readonly_sql":
+        if name in {"execute_readonly_sql", "execute_data_quality_rule"}:
             args.setdefault("user_id", self.settings.pinned_user_id)
         if name == "compare_onprem_and_atp_data":
             args.setdefault("user_id", self.settings.pinned_user_id)

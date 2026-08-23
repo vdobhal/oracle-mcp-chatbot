@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .errors import ConfigurationError
@@ -22,12 +22,57 @@ ProfileName = Literal["onprem", "atp"]
 DB_NAME_BY_PROFILE = {"onprem": "ONPREM", "atp": "ATP"}
 PROFILE_BY_DB_NAME = {v: k for k, v in DB_NAME_BY_PROFILE.items()}
 
-DEFAULT_ENV_FILE = ".env"
+# Anchored to the repository, not the working directory. An editor or launcher
+# that starts the process from the workspace root would otherwise find no .env,
+# and the server would come up with no credentials and no LLM key while looking
+# perfectly healthy.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
 _loaded_env_files: set[str] = set()
 
+# Values that are syntactically present but obviously not real. Treating these
+# as configured produces a confusing failure at first use rather than a clear
+# one at startup.
+_PLACEHOLDER_SECRETS = frozenset(
+    {
+        "",
+        "...",
+        "change-me",
+        "changeme",
+        "your-api-key",
+        "your-key-here",
+        "sk-xxx",
+        "xxx",
+        "todo",
+        "none",
+        "null",
+    }
+)
 
-def load_env_file(path: str | Path = DEFAULT_ENV_FILE) -> None:
-    """Merge a ``.env`` file into ``os.environ``.
+
+def is_placeholder(value: str) -> bool:
+    return value.strip().lower() in _PLACEHOLDER_SECRETS
+
+
+def env_file_candidates() -> list[Path]:
+    """The ``.env`` files consulted, in precedence order.
+
+    A file in the current directory wins over the repository one so a per-shell
+    override still works, but neither is required to be the working directory.
+    """
+    candidates = [Path.cwd() / DEFAULT_ENV_FILE.name, DEFAULT_ENV_FILE]
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
+def load_env_file(path: str | Path | None = None) -> None:
+    """Merge ``.env`` into ``os.environ``.
 
     ``BaseSettings`` reads its own ``ORACLE_MCP_*`` fields from the env file, but
     the per-database ``ONPREM_*`` / ``ATP_*`` variables are read straight from
@@ -37,13 +82,15 @@ def load_env_file(path: str | Path = DEFAULT_ENV_FILE) -> None:
     Real environment variables always win, so secrets injected by a container
     runtime or vault agent override a file left on disk.
     """
-    resolved = str(Path(path).resolve())
-    if resolved in _loaded_env_files or not Path(path).is_file():
-        return
-    for key, value in dotenv_values(path).items():
-        if value is not None and key not in os.environ:
-            os.environ[key] = value
-    _loaded_env_files.add(resolved)
+    targets = [Path(path)] if path is not None else env_file_candidates()
+    for target in targets:
+        resolved = str(target.resolve()) if target.exists() else str(target)
+        if resolved in _loaded_env_files or not target.is_file():
+            continue
+        for key, value in dotenv_values(target).items():
+            if value is not None and key not in os.environ:
+                os.environ[key] = value
+        _loaded_env_files.add(resolved)
 
 
 def _env(key: str, default: str = "") -> str:
@@ -196,7 +243,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="ORACLE_MCP_",
-        env_file=".env",
+        # Absolute, so the file is found regardless of where the process starts.
+        env_file=(str(DEFAULT_ENV_FILE), ".env"),
         extra="ignore",
         case_sensitive=False,
     )
@@ -227,6 +275,14 @@ class Settings(BaseSettings):
     audit_table: str = "CHATBOT_AUDIT.CHATBOT_AUDIT_LOG"
     log_level: str = "INFO"
 
+    # EIM data-quality framework. The governed rule catalog is read from
+    # On-Prem; target SQL may run against either database on the "both" profile.
+    dq_catalog_database: str = "ONPREM"
+    dq_catalog_schema: str = "EIM"
+    dq_catalog_table: str = "EIM_DQ_RULES_LOOKUP"
+    dq_history_file: Path = Path("logs/dq-history.jsonl")
+    dq_max_rules: int = Field(default=200, ge=1, le=1000)
+
     # Standalone chat UI (python -m oracle_mcp.chat). The LLM is OpenAI-compatible
     # so a corporate gateway works the same as api.openai.com.
     chat_host: str = "127.0.0.1"
@@ -235,6 +291,17 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr = SecretStr("")
     llm_model: str = "gpt-4o"
     llm_timeout_seconds: int = Field(default=120, ge=10, le=600)
+
+    @field_validator("policy_dir", "audit_file", "dq_history_file")
+    @classmethod
+    def _anchor_to_repository(cls, value: Path) -> Path:
+        """Resolve relative paths against the repo, not the working directory.
+
+        Policy and audit locations are shipped with the source tree, so a
+        process launched from a parent directory must still find them.
+        Absolute paths (deployments, tests) are left untouched.
+        """
+        return value if value.is_absolute() else PROJECT_ROOT / value
 
     @property
     def active_profiles(self) -> list[ProfileName]:
@@ -249,6 +316,27 @@ class Settings(BaseSettings):
     def reconciliation_enabled(self) -> bool:
         """Cross-database compare needs both pools in one process."""
         return self.profile == "both"
+
+    @property
+    def llm_configured(self) -> bool:
+        """Whether an LLM key is present and is not a template placeholder."""
+        return not is_placeholder(self.llm_api_key.get_secret_value())
+
+    def llm_status(self) -> str:
+        """Why the chat endpoint is unavailable, in operator terms."""
+        raw = self.llm_api_key.get_secret_value()
+        if not raw.strip():
+            files = ", ".join(str(p) for p in env_file_candidates())
+            return (
+                "ORACLE_MCP_LLM_API_KEY is not set. Add it to your .env, then "
+                f"restart this process. Looked in: {files}"
+            )
+        if is_placeholder(raw):
+            return (
+                "ORACLE_MCP_LLM_API_KEY is still the template placeholder "
+                f"{raw.strip()!r}. Replace it with a real key and restart."
+            )
+        return "ok"
 
 
 @lru_cache(maxsize=1)

@@ -6,17 +6,19 @@ generates SELECT-only SQL, validates it, executes it under hard limits, masks
 sensitive values, and logs everything.
 
 Built with [FastMCP 3](https://gofastmcp.com), `python-oracledb` (thin mode) and
-`sqlglot`. 221 tests, no database required to run them.
+`sqlglot`. 231 tests, no database required to run them.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                        # 221 passed
+pytest                                        # 231 passed
 cp .env.example .env                          # add credentials
 python -m oracle_mcp.server --profile onprem --check
 python -m oracle_mcp.server --profile onprem
 ```
 
 Testing a running deployment is covered in [docs/testing.md](docs/testing.md).
+The EIM rule workflow and DQ report contract are covered in
+[docs/data-quality-framework.md](docs/data-quality-framework.md).
 A browser UI that does not use Cursor is [docs/chat-ui.md](docs/chat-ui.md):
 
 ```bash
