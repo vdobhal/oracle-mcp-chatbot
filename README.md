@@ -17,8 +17,6 @@ python -m oracle_mcp.server --profile onprem
 ```
 
 Testing a running deployment is covered in [docs/testing.md](docs/testing.md).
-The EIM rule workflow and DQ report contract are covered in
-[docs/data-quality-framework.md](docs/data-quality-framework.md).
 A browser UI that does not use Cursor is [docs/chat-ui.md](docs/chat-ui.md):
 
 ```bash
@@ -36,6 +34,9 @@ python -m oracle_mcp.chat --profile both   # http://127.0.0.1:8500
 | Private | Masking by column name, by classification, and by value content |
 | Accountable | One audit record per call, with redacted SQL and a hash |
 | Two databases | Separate server processes; optional reconciliation server |
+
+EIM data-quality scoring lives in the separate **oracle-eim-dq** project, not
+in this chatbot.
 
 ## The eight tools
 

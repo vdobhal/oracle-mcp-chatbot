@@ -28,8 +28,6 @@ def test_chat_agent_exposes_core_tools(service: ToolService, settings: Settings)
         "search_data_dictionary",
         "validate_sql",
         "execute_readonly_sql",
-        "list_active_dq_rules",
-        "execute_data_quality_rule",
         "explain_query_result",
         "compare_onprem_and_atp_data",
     ):

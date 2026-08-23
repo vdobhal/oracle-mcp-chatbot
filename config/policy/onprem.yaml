@@ -5,7 +5,7 @@
 # is technically granted. This is the second of three independent access layers
 # (DB grants -> this allowlist -> role clearance).
 #
-# This database is in strict allowlist mode: exactly the governed objects below are
+# This database is in strict allowlist mode: exactly the five objects below are
 # reachable and nothing else. Adding an object here is a governance decision,
 # so it goes through review rather than being discovered automatically.
 database: ONPREM
@@ -63,16 +63,6 @@ schemas:
         type: TABLE
         description: Role assignments used by EIM processing.
         business_domain: Reference Data
-        sensitivity: INTERNAL
-        large_table: false
-        require_filter: false
-
-      - name: EIM_DQ_RULES_LOOKUP
-        type: TABLE
-        description: >-
-          Governed EIM data-quality rule catalog. Only ACTIVE rules are eligible
-          for MCP execution; stored SQL is independently validated as read-only.
-        business_domain: Data Quality Governance
         sensitivity: INTERNAL
         large_table: false
         require_filter: false

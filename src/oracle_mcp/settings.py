@@ -275,14 +275,6 @@ class Settings(BaseSettings):
     audit_table: str = "CHATBOT_AUDIT.CHATBOT_AUDIT_LOG"
     log_level: str = "INFO"
 
-    # EIM data-quality framework. The governed rule catalog is read from
-    # On-Prem; target SQL may run against either database on the "both" profile.
-    dq_catalog_database: str = "ONPREM"
-    dq_catalog_schema: str = "EIM"
-    dq_catalog_table: str = "EIM_DQ_RULES_LOOKUP"
-    dq_history_file: Path = Path("logs/dq-history.jsonl")
-    dq_max_rules: int = Field(default=200, ge=1, le=1000)
-
     # Standalone chat UI (python -m oracle_mcp.chat). The LLM is OpenAI-compatible
     # so a corporate gateway works the same as api.openai.com.
     chat_host: str = "127.0.0.1"
@@ -292,7 +284,7 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o"
     llm_timeout_seconds: int = Field(default=120, ge=10, le=600)
 
-    @field_validator("policy_dir", "audit_file", "dq_history_file")
+    @field_validator("policy_dir", "audit_file")
     @classmethod
     def _anchor_to_repository(cls, value: Path) -> Path:
         """Resolve relative paths against the repo, not the working directory.

@@ -60,11 +60,9 @@ def test_onprem_server_exposes_the_expected_tools(env, policy_dir, tmp_path):
     server = create_server(build(env, policy_dir, tmp_path, "onprem"))
     names = asyncio.run(tool_names(server))
     assert names == [
-        "execute_data_quality_rule",
         "execute_readonly_sql",
         "explain_query_result",
         "get_table_metadata",
-        "list_active_dq_rules",
         "list_allowed_schemas",
         "list_allowed_tables",
         "list_databases",
