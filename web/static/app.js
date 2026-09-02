@@ -12,10 +12,107 @@ function el(html) {
   return t.content.firstElementChild;
 }
 
+// Database content is untrusted, so every value is escaped before any Markdown
+// transform runs. Never move an unescaped fragment into innerHTML below.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function inlineMd(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+}
+
+function splitRow(line) {
+  return line
+    .replace(/^\s*\|/, "")
+    .replace(/\|\s*$/, "")
+    .split("|")
+    .map((c) => inlineMd(c.trim()));
+}
+
+const isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l);
+const isTableRule = (l) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+
+function renderMarkdown(text) {
+  const lines = escapeHtml(text).split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = Math.min(heading[1].length + 1, 6);
+      out.push(`<h${level}>${inlineMd(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    if (isTableRow(line) && isTableRule(lines[i + 1] || "")) {
+      const head = splitRow(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && isTableRow(lines[i])) {
+        body.push(splitRow(lines[i]));
+        i += 1;
+      }
+      const thead = `<tr>${head.map((c) => `<th>${c}</th>`).join("")}</tr>`;
+      const tbody = body
+        .map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`)
+        .join("");
+      out.push(`<table><thead>${thead}</thead><tbody>${tbody}</tbody></table>`);
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(`<li>${inlineMd(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`);
+        i += 1;
+      }
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Always consume the first line: a stray "| x |" with no separator row
+    // matches isTableRow but is not a table, and would otherwise never advance.
+    const para = [];
+    do {
+      para.push(inlineMd(lines[i]));
+      i += 1;
+    } while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !/^#{1,6}\s/.test(lines[i]) &&
+      !/^\s*[-*]\s+/.test(lines[i]) &&
+      !(isTableRow(lines[i]) && isTableRule(lines[i + 1] || ""))
+    );
+    out.push(`<p>${para.join("<br>")}</p>`);
+  }
+  return out.join("");
+}
+
 function addBubble(who, text, extra) {
   const wrap = el(`<article class="bubble ${who}"></article>`);
   wrap.innerHTML = `<div class="who">${who === "user" ? "You" : "Assistant"}</div><div class="card"></div>`;
-  wrap.querySelector(".card").textContent = text;
+  const card = wrap.querySelector(".card");
+  if (who === "assistant") {
+    card.innerHTML = renderMarkdown(text);
+  } else {
+    card.textContent = text;
+  }
   if (extra) wrap.appendChild(extra);
   logEl.appendChild(wrap);
   wrap.scrollIntoView({ block: "end" });

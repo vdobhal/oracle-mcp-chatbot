@@ -571,3 +571,116 @@ def test_invalid_exclusion_regex_is_a_configuration_error(tmp_path: Path):
 
     with pytest.raises(ConfigurationError, match="Invalid regular expression"):
         load_database_policy(policy)
+
+
+# --------------------------------------------------------------------------- #
+# Data-dictionary search
+#
+# Regression cover for a search that silently missed objects. The dictionary is
+# scanned instance-wide, so the row cap has to be spent on rows the caller may
+# actually see, and it has to be applied after ranking rather than before.
+# --------------------------------------------------------------------------- #
+
+
+class RecordingConnection:
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params: dict[str, object] = {}
+
+    def fetch(self, sql, params, max_rows):  # noqa: ANN001, ANN201
+        self.sql = sql
+        self.params = params
+        return None, [], None, None
+
+
+class RecordingRegistry:
+    def __init__(self) -> None:
+        self.connection = RecordingConnection()
+
+    def get(self, database: str):  # noqa: ANN201
+        return self.connection
+
+
+def _search_sql(owners=None):
+    from oracle_mcp.metadata import DataDictionary
+
+    registry = RecordingRegistry()
+    DataDictionary(registry).search_objects("ATP", ["napp", "cdm", "sync"], 100, owners)
+    return registry.connection.sql, registry.connection.params
+
+
+def test_dictionary_search_caps_after_ranking_not_before():
+    """ROWNUM must sit outside the ordered subquery.
+
+    Capping alongside the filter lets Oracle stop at an arbitrary N rows before
+    any ordering, so the object matching every term is discarded while noise
+    that happens to be scanned first survives.
+    """
+    sql, _ = _search_sql()
+    # The subquery closes at the last ")"; earlier ones belong to IN (...).
+    inner, _, outer = sql.rpartition(")")
+    assert "ROWNUM" not in inner
+    assert "ROWNUM" in outer
+    assert "ORDER BY" in inner
+
+
+def test_dictionary_search_ranks_by_how_many_terms_matched():
+    sql, _ = _search_sql()
+    assert sql.count("CASE WHEN") == 3
+    assert "DESC" in sql
+
+
+def test_dictionary_search_scopes_the_scan_to_the_named_schemas():
+    sql, params = _search_sql(["NAPPERP", "NAPPERPDS"])
+    assert "owner IN (:o0, :o1)" in sql
+    assert params["o0"] == "NAPPERP"
+    assert params["o1"] == "NAPPERPDS"
+
+
+def test_dictionary_search_without_named_schemas_scans_the_instance():
+    """An open wildcard has no list to push down, so it must not invent one."""
+    sql, params = _search_sql()
+    assert "owner IN" not in sql
+    assert not [k for k in params if k.startswith("o")]
+
+
+def test_dictionary_search_rejects_a_schema_that_is_not_an_identifier():
+    from oracle_mcp.errors import MetadataUnavailableError
+
+    with pytest.raises(MetadataUnavailableError):
+        _search_sql(["NAPPERP; DROP TABLE X"])
+
+
+def test_search_finds_discovered_columns_on_a_strict_allowlist(onprem_store):
+    """Declared objects with discovered columns must still be searchable.
+
+    On-Prem names its objects but declares no columns. Reading the columns off
+    ObjectPolicy returns nothing in that shape, so a search for a column that
+    plainly exists came back empty and the model went looking for a similarly
+    named column on another table.
+    """
+    from oracle_mcp.metadata import MetadataService
+
+    store, dictionary = onprem_store
+    payload = MetadataService(store, dictionary).search(
+        "ONPREM", "contact email", store.role("analyst")
+    )
+    hits = {m["qualified_name"] for m in payload["matching_columns"]}
+    assert "EIM.EIM_PR_SYSTEM.CONTACT_EMAIL" in hits
+
+
+def test_search_still_hides_discovered_columns_above_the_role_clearance(onprem_store):
+    from oracle_mcp.metadata import MetadataService
+
+    store, dictionary = onprem_store
+    service = MetadataService(store, dictionary)
+    cleared = {
+        m["qualified_name"]
+        for m in service.search("ONPREM", "tax id", store.role("admin"))["matching_columns"]
+    }
+    analyst = {
+        m["qualified_name"]
+        for m in service.search("ONPREM", "tax id", store.role("analyst"))["matching_columns"]
+    }
+    assert "EIM.EIM_PR_SYSTEM.TAX_ID" in cleared
+    assert not any("TAX_ID" in h for h in analyst)

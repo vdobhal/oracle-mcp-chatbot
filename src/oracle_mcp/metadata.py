@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -108,21 +109,30 @@ _SCHEMA_OBJECTS_SQL = """
      ORDER BY object_name
 """
 
+# ROWNUM is applied in an outer query over an ordered inner one, and the inner
+# sort is by relevance rather than by name. Capping in the same block as the
+# filter would let Oracle stop at an arbitrary N rows before any sort; capping
+# after an alphabetical sort is just as bad, because it keeps whichever matches
+# sort early and discards the object that matched every term.
 _SEARCH_OBJECTS_SQL = """
-    SELECT owner, object_name, object_type
-      FROM all_objects
-     WHERE object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
-       AND ({predicate})
-       AND ROWNUM <= :row_limit
-     ORDER BY owner, object_name
+    SELECT * FROM (
+        SELECT owner, object_name, object_type
+          FROM all_objects
+         WHERE object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+           AND ({predicate})
+           {owner_filter}
+         ORDER BY ({rank_expr}) DESC, LENGTH(object_name), owner, object_name
+    ) WHERE ROWNUM <= :row_limit
 """
 
 _SEARCH_COLUMNS_SQL = """
-    SELECT owner, table_name, column_name, data_type
-      FROM all_tab_columns
-     WHERE ({predicate})
-       AND ROWNUM <= :row_limit
-     ORDER BY owner, table_name, column_name
+    SELECT * FROM (
+        SELECT owner, table_name, column_name, data_type
+          FROM all_tab_columns
+         WHERE ({predicate})
+           {owner_filter}
+         ORDER BY ({rank_expr}) DESC, LENGTH(column_name), owner, table_name, column_name
+    ) WHERE ROWNUM <= :row_limit
 """
 
 _COLUMN_NAMES_SQL = """
@@ -225,6 +235,7 @@ class DataDictionary:
         column_expr: str,
         terms: list[str],
         limit: int,
+        owners: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Term search pushed into the dictionary rather than enumerated in Python.
 
@@ -232,19 +243,62 @@ class DataDictionary:
         schema at a time would mean a dictionary round trip per schema. The terms
         are bound, never interpolated; only the number of placeholders varies, and
         ``column_expr`` is a server-owned literal rather than caller input.
+
+        ``owners`` restricts the scan to the schemas the policy actually exposes.
+        Without it the row cap is spent on objects the caller will never be shown,
+        which on a large instance crowds out every visible match.
         """
         if not terms:
             return []
-        binds = {f"t{i}": f"%{term.lower()}%" for i, term in enumerate(terms[:5])}
+        binds: dict[str, Any] = {
+            f"t{i}": f"%{term.lower()}%" for i, term in enumerate(terms[:5])
+        }
         predicate = " OR ".join(f"LOWER({column_expr}) LIKE :{name}" for name in binds)
-        sql = sql_template.replace("{predicate}", predicate)
+        # How many of the terms this row matched. Ordering by it keeps the row
+        # cap on the rows a human would call relevant: a name matching every
+        # term outranks one that merely shares a common prefix.
+        rank_expr = " + ".join(
+            f"CASE WHEN LOWER({column_expr}) LIKE :{name} THEN 1 ELSE 0 END"
+            for name in binds
+        )
+
+        owner_filter = ""
+        if owners:
+            owner_binds = {
+                f"o{i}": _safe_identifier(o, "Schema") for i, o in enumerate(owners)
+            }
+            binds.update(owner_binds)
+            placeholders = ", ".join(f":{name}" for name in owner_binds)
+            owner_filter = f"AND owner IN ({placeholders})"
+
+        sql = (
+            sql_template.replace("{predicate}", predicate)
+            .replace("{rank_expr}", rank_expr)
+            .replace("{owner_filter}", owner_filter)
+        )
         return self._fetch(database, sql, {**binds, "row_limit": int(limit)})
 
-    def search_objects(self, database: str, terms: list[str], limit: int) -> list[dict[str, Any]]:
-        return self._search(database, _SEARCH_OBJECTS_SQL, "object_name", terms, limit)
+    def search_objects(
+        self,
+        database: str,
+        terms: list[str],
+        limit: int,
+        owners: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._search(
+            database, _SEARCH_OBJECTS_SQL, "object_name", terms, limit, owners
+        )
 
-    def search_columns(self, database: str, terms: list[str], limit: int) -> list[dict[str, Any]]:
-        return self._search(database, _SEARCH_COLUMNS_SQL, "column_name", terms, limit)
+    def search_columns(
+        self,
+        database: str,
+        terms: list[str],
+        limit: int,
+        owners: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._search(
+            database, _SEARCH_COLUMNS_SQL, "column_name", terms, limit, owners
+        )
 
     def list_columns(self, database: str, schema: str, object_name: str) -> tuple[str, ...]:
         owner = (schema or "").strip().upper()
@@ -572,6 +626,15 @@ class MetadataService:
                 next_steps=["Retry once the database connection is restored."],
             )
 
+        # Push the visible schemas into the query. A named discovery list is
+        # exactly the set to scan; an open wildcard has no list to push, so it
+        # keeps the instance-wide scan and filters in Python below.
+        owners = sorted(
+            s
+            for s in policy.discovered_schemas
+            if policy.is_discoverable(s) and role.can_see_schema(policy.database, s)
+        )
+
         def _visible(owner: str, object_name: str) -> bool:
             # The dictionary search spans the whole instance, so results must be
             # filtered back down to the schemas this policy actually exposes.
@@ -594,12 +657,12 @@ class MetadataService:
                 "data_sensitivity": "INTERNAL",
                 "confidence_score": round(_score(terms, str(r["OBJECT_NAME"]), "", ""), 3),
             }
-            for r in self.dictionary.search_objects(policy.database, terms, limit * 4)
+            for r in self.dictionary.search_objects(policy.database, terms, limit * 4, owners)
             if _visible(str(r.get("OWNER", "")), str(r.get("OBJECT_NAME", "")))
         ]
 
         column_hits = []
-        for r in self.dictionary.search_columns(policy.database, terms, limit * 4):
+        for r in self.dictionary.search_columns(policy.database, terms, limit * 4, owners):
             owner = str(r.get("OWNER", ""))
             if not _visible(owner, str(r.get("TABLE_NAME", ""))):
                 continue
@@ -669,7 +732,11 @@ class MetadataService:
                         "confidence_score": round(table_score, 3),
                     }
                 )
-            for col in obj.columns_visible_to(role.clearance_rank):
+            # Resolved through the store, not ObjectPolicy.columns_visible_to:
+            # a database that declares its objects but discovers their columns
+            # has no declared columns to iterate, so asking the object directly
+            # makes every column invisible to search.
+            for col in self.store.columns_visible_to(database_name, obj, role.clearance_rank):
                 col_score = _score(terms, col.name, col.description, "")
                 if col_score > 0:
                     column_hits.append(

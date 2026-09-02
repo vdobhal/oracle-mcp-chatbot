@@ -163,12 +163,12 @@ Swap `analyst` for `business_user` to watch clearance narrow the result, and for
 
 ## 4. The automated suite
 
-221 tests, no Oracle instance required — the driver and data dictionary are
+228 tests, no Oracle instance required — the driver and data dictionary are
 faked, so the guardrail, masking, RBAC, discovery and audit paths run
 deterministically in a few seconds.
 
 ```bash
-.pydeps/bin/pytest -q                   # all 221
+.pydeps/bin/pytest -q                   # all 228
 .pydeps/bin/pytest -q -m security       # the 166 that assert a control
 .pydeps/bin/pytest -q tests/test_sql_guard.py
 ```
