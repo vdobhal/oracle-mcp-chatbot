@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Oracle data assistant</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <aside class="rail">
+    <div class="brand">
+      <span class="mark">OA</span>
+      <div>
+        <h1>Oracle data assistant</h1>
+        <p>Read-only On-Prem and ATP</p>
+      </div>
+    </div>
+    <button type="button" id="new-chat">New conversation</button>
+    <section>
+      <h2>This session</h2>
+      <dl id="session-meta"></dl>
+    </section>
+    <section>
+      <h2>Databases</h2>
+      <ul id="db-list"></ul>
+    </section>
+    <section>
+      <h2>Tools</h2>
+      <p class="hint">Every answer goes through the same guardrails as the MCP server: metadata first, then validate, then execute.</p>
+      <ul id="tool-list" class="caps"></ul>
+    </section>
+  </aside>
+  <main>
+    <header class="status-bar">
+      <span id="health-pill" class="pill">Connecting…</span>
+      <span id="llm-pill" class="pill">Model</span>
+    </header>
+    <div id="log" class="log"></div>
+    <form id="composer">
+      <textarea id="question" rows="2" placeholder="Ask about customers, install base, contracts…" required></textarea>
+      <button type="submit">Ask</button>
+    </form>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

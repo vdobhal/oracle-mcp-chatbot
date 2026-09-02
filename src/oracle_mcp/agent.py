@@ -1,148 +1,159 @@
-"""LLM tool loop for the standalone chat UI.
+"""LLM agent that calls ToolService — the same tools the MCP server exposes.
 
-The browser never talks to Oracle. It posts a question here; this module calls
-the same ``ToolService`` the MCP server exposes, then asks an OpenAI-compatible
-model to narrate. Role and user id are taken from process configuration, not
-from the model or the browser.
+The chat UI uses this instead of Cursor. Security still lives in ToolService:
+the model can only invoke named tools, and validate_sql / execute_readonly_sql
+still refuse anything that is not a capped SELECT against approved objects.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import urllib.error
-import urllib.request
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-from .settings import Settings
+import httpx
+
 from .tools import ToolService
 
 logger = logging.getLogger(__name__)
 
-_MAX_TOOL_RESULT_CHARS = 24_000
-_MAX_TURNS = 12
-_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "system_prompt.md"
-_STRIP_ARGS = frozenset({"user_role", "user_id"})
+_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "system_prompt.md"
+_MAX_TOOL_ROUNDS = 12
+_MAX_TOOL_RESULT_CHARS = 12_000
 
 
-class LlmClient(Protocol):
-    def complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
-    ) -> dict[str, Any]: ...
-
-
-def load_system_prompt() -> str:
-    if _PROMPT_PATH.is_file():
-        return _PROMPT_PATH.read_text(encoding="utf-8")
-    return (
-        "You are a secure enterprise database assistant. Use only the provided "
-        "tools. Never invent table names, counts or credentials."
-    )
-
-
-def openai_tool_schemas(*, reconciliation: bool) -> list[dict[str, Any]]:
-    """OpenAI function-calling schemas for every ToolService capability."""
-    db = {
-        "type": "string",
-        "description": "Logical database name: ONPREM or ATP.",
-    }
-    tools: list[dict[str, Any]] = [
-        _fn(
-            "list_databases",
-            "List the Oracle databases this assistant can query, with guardrail limits. "
-            "Credentials and hosts are never included.",
-            {},
-        ),
-        _fn(
-            "list_allowed_schemas",
-            "List schemas this assistant is authorised to read.",
-            {"database_name": db},
-            required=["database_name"],
-        ),
-        _fn(
-            "list_allowed_tables",
-            "List approved tables and views in a schema, with domain and row estimates.",
-            {
-                "database_name": db,
-                "schema_name": {"type": "string", "description": "Schema from list_allowed_schemas."},
-            },
-            required=["database_name", "schema_name"],
-        ),
-        _fn(
-            "get_table_metadata",
-            "Describe an approved table or view: columns, types, sensitivity.",
-            {
-                "database_name": db,
-                "schema_name": {"type": "string"},
-                "table_name": {"type": "string"},
-            },
-            required=["database_name", "schema_name", "table_name"],
-        ),
-        _fn(
-            "search_data_dictionary",
-            "Search approved metadata for tables and columns matching a business term. "
-            "Call this before writing SQL.",
-            {
-                "database_name": db,
-                "search_text": {"type": "string", "description": "Business term, e.g. customer or serial."},
-            },
-            required=["database_name", "search_text"],
-        ),
-        _fn(
-            "validate_sql",
-            "Validate a SELECT against read-only guardrails. Returns rewritten_safe_sql, "
-            "the only text execute_readonly_sql will accept.",
-            {
-                "database_name": db,
-                "sql_text": {"type": "string", "description": "Candidate SELECT statement."},
-            },
-            required=["database_name", "sql_text"],
-        ),
-        _fn(
-            "execute_readonly_sql",
-            "Execute a validated SELECT. Pass exactly rewritten_safe_sql from validate_sql.",
-            {
-                "database_name": db,
-                "validated_sql": {
-                    "type": "string",
-                    "description": "Exactly rewritten_safe_sql from validate_sql.",
-                },
-                "bind_parameters": {
-                    "type": "object",
-                    "description": "Bind variable values.",
-                    "additionalProperties": True,
-                },
-            },
-            required=["database_name", "validated_sql"],
-        ),
-        _fn(
-            "explain_query_result",
-            "Profile a result set into facts for the business-language answer. "
-            "Use these figures verbatim.",
-            {
-                "user_question": {"type": "string"},
-                "sql_text": {"type": "string"},
-                "query_result": {
-                    "type": "object",
-                    "description": "Full envelope returned by execute_readonly_sql.",
-                    "additionalProperties": True,
-                },
-            },
-            required=["user_question"],
-        ),
-    ]
-    if reconciliation:
-        tools.append(
-            _fn(
-                "compare_onprem_and_atp_data",
-                "Reconcile a business entity between On-Prem and ATP. Both queries are validated first.",
-                {
-                    "business_entity": {"type": "string"},
-                    "matching_key": {
+TOOL_SPECS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_databases",
+            "description": "List Oracle databases this assistant can query, with guardrail limits. Never includes credentials.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_allowed_schemas",
+            "description": "List schemas the current role may read on a database.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database_name": {
                         "type": "string",
-                        "description": "Business key column(s), comma separated.",
-                    },
+                        "description": "ONPREM or ATP",
+                    }
+                },
+                "required": ["database_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_allowed_tables",
+            "description": "List approved tables and views in a schema, with domain and row estimates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database_name": {"type": "string"},
+                    "schema_name": {"type": "string"},
+                },
+                "required": ["database_name", "schema_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_table_metadata",
+            "description": "Describe an approved table or view: columns, types, nullability, sensitivity.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database_name": {"type": "string"},
+                    "schema_name": {"type": "string"},
+                    "table_name": {"type": "string"},
+                },
+                "required": ["database_name", "schema_name", "table_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_data_dictionary",
+            "description": "Search approved metadata for tables and columns matching a business term. Use this before writing SQL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database_name": {"type": "string"},
+                    "search_text": {"type": "string"},
+                },
+                "required": ["database_name", "search_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_sql",
+            "description": "Validate a SELECT against read-only guardrails. Returns rewritten_safe_sql, the only text execute_readonly_sql will accept.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database_name": {"type": "string"},
+                    "sql_text": {"type": "string"},
+                },
+                "required": ["database_name", "sql_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_readonly_sql",
+            "description": "Execute a previously validated SELECT and return masked, capped rows. Pass exactly rewritten_safe_sql from validate_sql.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database_name": {"type": "string"},
+                    "validated_sql": {"type": "string"},
+                    "bind_parameters": {"type": "object"},
+                },
+                "required": ["database_name", "validated_sql"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "explain_query_result",
+            "description": "Profile a result set into facts for a business-language answer. Use these figures verbatim.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_question": {"type": "string"},
+                    "sql_text": {"type": "string"},
+                    "query_result": {"type": "object"},
+                    "table_metadata": {"type": "object"},
+                },
+                "required": ["user_question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_onprem_and_atp_data",
+            "description": "Reconcile a business entity between On-Prem and ATP. Both queries are validated before either runs. Only available when both databases are enabled in this process.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "business_entity": {"type": "string"},
+                    "matching_key": {"type": "string"},
                     "onprem_query": {"type": "string"},
                     "atp_query": {"type": "string"},
                     "compare_columns": {
@@ -150,214 +161,241 @@ def openai_tool_schemas(*, reconciliation: bool) -> list[dict[str, Any]]:
                         "items": {"type": "string"},
                     },
                 },
-                required=["business_entity", "matching_key", "onprem_query", "atp_query"],
-            )
-        )
-    return tools
-
-
-def _fn(
-    name: str, description: str, properties: dict[str, Any], required: list[str] | None = None
-) -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required or [],
-                "additionalProperties": False,
+                "required": [
+                    "business_entity",
+                    "matching_key",
+                    "onprem_query",
+                    "atp_query",
+                ],
             },
         },
+    },
+]
+
+
+def load_system_prompt() -> str:
+    if _SYSTEM_PROMPT_PATH.is_file():
+        return _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        "You are a secure enterprise database assistant. Use only the provided "
+        "tools. Discover metadata before writing SQL. Call validate_sql before "
+        "execute_readonly_sql, and pass rewritten_safe_sql unchanged. Never "
+        "guess numbers. Always include Data Source Used."
+    )
+
+
+def tools_for(service: ToolService) -> list[dict[str, Any]]:
+    names = {
+        "list_databases",
+        "list_allowed_schemas",
+        "list_allowed_tables",
+        "get_table_metadata",
+        "search_data_dictionary",
+        "validate_sql",
+        "execute_readonly_sql",
+        "explain_query_result",
     }
+    if service.settings.reconciliation_enabled:
+        names.add("compare_onprem_and_atp_data")
+    return [spec for spec in TOOL_SPECS if spec["function"]["name"] in names]
 
 
-class OpenAiCompatibleClient:
-    """POST {base}/chat/completions. Works with OpenAI, Azure AI gateway, LiteLLM."""
+def compact_tool_result(payload: Any) -> str:
+    text = json.dumps(payload, default=str, ensure_ascii=False)
+    if len(text) <= _MAX_TOOL_RESULT_CHARS:
+        return text
+    return text[: _MAX_TOOL_RESULT_CHARS] + "\n…[truncated for the model; the UI kept the full tool result]"
+
+
+def summarise_tool_result(name: str, payload: dict[str, Any]) -> str:
+    status = payload.get("status") or payload.get("validation_status") or "OK"
+    if name == "list_allowed_tables":
+        return f"{status}: {len(payload.get('objects') or [])} object(s)"
+    if name == "search_data_dictionary":
+        return f"{status}: {payload.get('match_count', 0)} match(es)"
+    if name == "execute_readonly_sql":
+        return f"{status}: {payload.get('row_count', 0)} row(s)"
+    if name == "validate_sql":
+        return f"{payload.get('validation_status') or status}"
+    if name == "list_allowed_schemas":
+        return f"{status}: {len(payload.get('schemas') or [])} schema(s)"
+    return str(status)
+
+
+class LlmError(RuntimeError):
+    """The model endpoint refused or could not be reached."""
+
+
+class ChatLlm:
+    """OpenAI-compatible chat completions, including Azure OpenAI."""
 
     def __init__(
-        self, *, base_url: str, api_key: str, model: str, timeout_seconds: int
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        kind: str = "openai",
+        azure_api_version: str = "2024-10-21",
+        timeout_seconds: float = 90.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.kind = kind.lower()
+        self.azure_api_version = azure_api_version
         self.timeout_seconds = timeout_seconds
 
-    def complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        url = self.base_url
-        if not url.endswith("/chat/completions"):
-            url = f"{url}/chat/completions"
-        body = json.dumps(
-            {
+    def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.kind == "azure":
+            url = (
+                f"{self.base_url}/openai/deployments/{self.model}/chat/completions"
+                f"?api-version={self.azure_api_version}"
+            )
+            headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+            body: dict[str, Any] = {"messages": messages, "tools": tools, "tool_choice": "auto"}
+        else:
+            url = f"{self.base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            body = {
                 "model": self.model,
                 "messages": messages,
                 "tools": tools,
                 "tool_choice": "auto",
-                "temperature": 0.1,
             }
-        ).encode("utf-8")
-        request = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:800]
-            raise RuntimeError(f"LLM HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"LLM unreachable: {exc.reason}") from exc
-        choices = payload.get("choices") or []
+            response = httpx.post(url, headers=headers, json=body, timeout=self.timeout_seconds)
+        except httpx.HTTPError as exc:
+            raise LlmError(f"Could not reach the language-model endpoint: {exc}") from exc
+        if response.status_code >= 400:
+            raise LlmError(
+                f"Language-model endpoint returned HTTP {response.status_code}: "
+                f"{response.text[:400]}"
+            )
+        data = response.json()
+        choices = data.get("choices") or []
         if not choices:
-            raise RuntimeError("LLM returned no choices.")
-        return choices[0].get("message") or {}
+            raise LlmError("Language-model endpoint returned no choices.")
+        return choices[0]["message"]
 
 
 class ChatAgent:
-    def __init__(
-        self,
-        service: ToolService,
-        settings: Settings,
-        llm: LlmClient | None = None,
-    ) -> None:
+    """Runs one user question through the tool loop and returns a final answer."""
+
+    def __init__(self, service: ToolService, llm: ChatLlm | None) -> None:
         self.service = service
-        self.settings = settings
-        self.llm = llm or OpenAiCompatibleClient(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key.get_secret_value(),
-            model=settings.llm_model,
-            timeout_seconds=settings.llm_timeout_seconds,
-        )
-        self.tools = openai_tool_schemas(
-            reconciliation=settings.reconciliation_enabled
-        )
-        self.system_prompt = load_system_prompt() + self._runtime_preamble()
+        self.llm = llm
+        self._dispatch: dict[str, Callable[..., dict[str, Any]]] = {
+            "list_databases": lambda **_: service.list_databases(),
+            "list_allowed_schemas": service.list_allowed_schemas,
+            "list_allowed_tables": service.list_allowed_tables,
+            "get_table_metadata": service.get_table_metadata,
+            "search_data_dictionary": service.search_data_dictionary,
+            "validate_sql": service.validate_sql,
+            "execute_readonly_sql": self._execute,
+            "explain_query_result": service.explain_query_result,
+            "compare_onprem_and_atp_data": service.compare_onprem_and_atp_data,
+        }
 
-    def _runtime_preamble(self) -> str:
-        dbs = ", ".join(self.service.registry.names) or "(none connected)"
-        return (
-            "\n\n## Runtime\n"
-            f"- Databases available in this process: {dbs}\n"
-            f"- Pinned role: {self.settings.pinned_role} "
-            "(the user cannot change this)\n"
-            f"- Row cap: {self.settings.max_rows}; "
-            f"query timeout: {self.settings.query_timeout_seconds}s\n"
-            "- Do not call tools with a user_role argument.\n"
-        )
+    def _execute(self, **kwargs: Any) -> dict[str, Any]:
+        kwargs.pop("user_role", None)
+        kwargs.setdefault("user_id", self.service.settings.pinned_user_id)
+        return self.service.execute_readonly_sql(**kwargs)
 
-    def tool_names(self) -> list[str]:
-        return [t["function"]["name"] for t in self.tools]
-
-    def dispatch(self, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
-        """Run one tool. Identity args from the model are discarded."""
-        args = {k: v for k, v in (arguments or {}).items() if k not in _STRIP_ARGS}
-        method = getattr(self.service, name, None)
-        if method is None or name not in set(self.tool_names()):
+    def invoke_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        fn = self._dispatch.get(name)
+        if fn is None:
             return {
                 "status": "ERROR",
                 "error_code": "UNKNOWN_TOOL",
-                "message": f"Tool {name!r} is not available on this server.",
+                "message": f"{name} is not an available tool on this server.",
             }
-        if name == "execute_readonly_sql":
-            args.setdefault("user_id", self.settings.pinned_user_id)
-        if name == "compare_onprem_and_atp_data":
-            args.setdefault("user_id", self.settings.pinned_user_id)
+        if name == "compare_onprem_and_atp_data" and not self.service.settings.reconciliation_enabled:
+            return {
+                "status": "ERROR",
+                "error_code": "TOOL_UNAVAILABLE",
+                "message": "Reconciliation requires this process to serve both ONPREM and ATP (ORACLE_MCP_PROFILE=both).",
+            }
+        cleaned = {k: v for k, v in arguments.items() if k != "user_role"}
         try:
-            result = method(**args)
+            return fn(**cleaned)
         except TypeError as exc:
             return {
                 "status": "ERROR",
-                "error_code": "BAD_ARGUMENTS",
+                "error_code": "BAD_TOOL_ARGS",
                 "message": str(exc),
             }
-        except Exception as exc:  # noqa: BLE001 — never leak a stack to the model
-            logger.exception("Tool %s failed", name)
-            return {
-                "status": "ERROR",
-                "error_code": "TOOL_FAILED",
-                "message": f"{type(exc).__name__}: {exc}",
-            }
-        return result if isinstance(result, dict) else {"result": result}
 
-    def ask(
-        self, question: str, history: list[dict[str, str]] | None = None
+    def run(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
-        for item in (history or [])[-16:]:
-            role = item.get("role")
-            content = item.get("content")
-            if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
-                messages.append({"role": role, "content": content[:8000]})
-        messages.append({"role": "user", "content": question[:8000]})
+        if self.llm is None:
+            raise LlmError(
+                "No language model is configured. Set CHAT_LLM_API_KEY and "
+                "CHAT_LLM_MODEL (and CHAT_LLM_BASE_URL) in .env."
+            )
+
+        def emit(event: dict[str, Any]) -> None:
+            if on_event is not None:
+                on_event(event)
+
+        tools = tools_for(self.service)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": load_system_prompt()}]
+        for turn in history or []:
+            role = turn.get("role")
+            content = turn.get("content")
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": question})
 
         trace: list[dict[str, Any]] = []
         answer = ""
-        for _ in range(_MAX_TURNS):
-            message = self.llm.complete(messages, self.tools)
+        for _ in range(_MAX_TOOL_ROUNDS):
+            message = self.llm.complete(messages, tools)
             tool_calls = message.get("tool_calls") or []
-            content = (message.get("content") or "").strip()
             if not tool_calls:
-                answer = content
+                answer = (message.get("content") or "").strip()
                 break
             messages.append(message)
             for call in tool_calls:
-                fn = (call.get("function") or {})
+                fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or "{}"
                 try:
-                    parsed = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
                 except json.JSONDecodeError:
-                    parsed = {}
-                result = self.dispatch(name, parsed if isinstance(parsed, dict) else {})
-                trimmed = _trim_tool_result(result)
-                trace.append(
-                    {
-                        "tool": name,
-                        "arguments": {k: v for k, v in parsed.items() if k not in _STRIP_ARGS}
-                        if isinstance(parsed, dict)
-                        else {},
-                        "status": trimmed.get("status") if isinstance(trimmed, dict) else "OK",
-                    }
-                )
+                    arguments = {}
+                emit({"type": "tool", "name": name, "status": "start", "arguments": arguments})
+                result = self.invoke_tool(name, arguments)
+                summary = summarise_tool_result(name, result if isinstance(result, dict) else {})
+                trace.append({"name": name, "arguments": arguments, "summary": summary})
+                emit({"type": "tool", "name": name, "status": "done", "summary": summary})
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.get("id") or name,
-                        "content": json.dumps(trimmed, default=str),
+                        "content": compact_tool_result(result),
                     }
                 )
         else:
             answer = (
-                "I reached the tool-call limit before finishing. Narrow the question "
-                "or name the schema and table."
+                "I reached the tool-call limit before finishing. Ask a narrower "
+                "question, or name the schema and table if you know them."
             )
-        return {
-            "answer": answer,
-            "tool_trace": trace,
-            "role": self.settings.pinned_role,
-        }
+
+        emit({"type": "message", "text": answer})
+        return {"answer": answer, "tools": trace}
 
 
-def _trim_tool_result(payload: dict[str, Any]) -> dict[str, Any]:
-    text = json.dumps(payload, default=str)
-    if len(text) <= _MAX_TOOL_RESULT_CHARS:
-        return payload
-    return {
-        "status": payload.get("status", "OK"),
-        "truncated": True,
-        "note": (
-            f"Tool result was {len(text)} characters and was truncated. "
-            "Ask for a specific schema, table or filter rather than listing everything."
-        ),
-        "preview": text[:_MAX_TOOL_RESULT_CHARS],
-    }
+def iter_sse(payloads: Iterator[dict[str, Any]]) -> Iterator[str]:
+    for event in payloads:
+        name = event.get("type", "message")
+        data = json.dumps(event, default=str, ensure_ascii=False)
+        yield f"event: {name}\ndata: {data}\n\n"
+    yield "event: done\ndata: {}\n\n"

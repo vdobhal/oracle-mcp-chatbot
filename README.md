@@ -6,22 +6,29 @@ generates SELECT-only SQL, validates it, executes it under hard limits, masks
 sensitive values, and logs everything.
 
 Built with [FastMCP 3](https://gofastmcp.com), `python-oracledb` (thin mode) and
-`sqlglot`. 231 tests, no database required to run them.
+`sqlglot`. 221 tests, no database required to run them.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                        # 231 passed
+pytest                                        # 221 passed
 cp .env.example .env                          # add credentials
 python -m oracle_mcp.server --profile onprem --check
 python -m oracle_mcp.server --profile onprem
 ```
 
-Testing a running deployment is covered in [docs/testing.md](docs/testing.md).
-A browser UI that does not use Cursor is [docs/chat-ui.md](docs/chat-ui.md):
+### Standalone chat UI (not Cursor)
+
+This is a browser UI that calls the same tools as the MCP server. Cursor is not involved.
 
 ```bash
-python -m oracle_mcp.chat --profile both   # http://127.0.0.1:8500
+# in .env: CHAT_LLM_API_KEY, CHAT_LLM_MODEL, and Oracle credentials
+ORACLE_MCP_PROFILE=both python -m oracle_mcp.webapp
+# open http://127.0.0.1:8090
 ```
+
+Use `CHAT_LLM_KIND=azure` plus `CHAT_LLM_BASE_URL` for Azure OpenAI. Bind stays on loopback unless you set `CHAT_UI_HOST`. This process holds both database credentials when `profile=both`, so treat it like the reconciliation container.
+
+Testing a running deployment is covered in [docs/testing.md](docs/testing.md).
 
 ## What it does
 
@@ -34,9 +41,6 @@ python -m oracle_mcp.chat --profile both   # http://127.0.0.1:8500
 | Private | Masking by column name, by classification, and by value content |
 | Accountable | One audit record per call, with redacted SQL and a hash |
 | Two databases | Separate server processes; optional reconciliation server |
-
-EIM data-quality scoring lives in the separate **oracle-eim-dq** project, not
-in this chatbot.
 
 ## The eight tools
 

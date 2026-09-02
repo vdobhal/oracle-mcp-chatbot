@@ -69,6 +69,24 @@ Then confirm it declines the things it should. Ask it to delete rows, or to
 query `GTM_CDM_MISMATCH_DUMP_22MAY`. A correct answer is a refusal with a reason,
 not an apology followed by compliance.
 
+---
+
+## 2b. Standalone chat UI (not Cursor)
+
+A browser UI that uses the same `ToolService` as the MCP server:
+
+```bash
+# .env must include Oracle credentials plus CHAT_LLM_API_KEY and CHAT_LLM_MODEL
+ORACLE_MCP_PROFILE=both PYTHONPATH=.pydeps:src python3 -m oracle_mcp.webapp
+```
+
+Open http://127.0.0.1:8090. `/api/health` reports database pings and whether a
+language model is configured. Chat is `POST /api/chat`. The model never receives
+database passwords; it can only call the named tools.
+
+If chat returns HTTP 503, the UI is up but `CHAT_LLM_*` is missing. The health
+page still works.
+
 Watch for two failure modes that only appear in conversation:
 
 - **Answering from memory.** If a reply contains figures without a
@@ -145,30 +163,18 @@ Swap `analyst` for `business_user` to watch clearance narrow the result, and for
 
 ## 4. The automated suite
 
-215 tests, no Oracle instance required — the driver and data dictionary are
+221 tests, no Oracle instance required — the driver and data dictionary are
 faked, so the guardrail, masking, RBAC, discovery and audit paths run
 deterministically in a few seconds.
 
 ```bash
-.pydeps/bin/pytest -q                   # all 215
+.pydeps/bin/pytest -q                   # all 221
 .pydeps/bin/pytest -q -m security       # the 166 that assert a control
 .pydeps/bin/pytest -q tests/test_sql_guard.py
 ```
 
 Run this before any policy change ships. It is the only check that runs without
 credentials, so it is also the one that works in CI.
-
----
-
-## 5. Standalone browser UI (not Cursor)
-
-Same Oracle tools as the MCP server, in a browser. Requires `ORACLE_MCP_LLM_API_KEY`.
-See [chat-ui.md](chat-ui.md).
-
-```bash
-python3 -m oracle_mcp.chat --profile both
-# open http://127.0.0.1:8500
-```
 
 ---
 

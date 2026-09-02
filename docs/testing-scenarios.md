@@ -1,6 +1,6 @@
 # Test plan
 
-215 automated tests run without an Oracle instance. `FakeConnection` and
+221 automated tests run without an Oracle instance. `FakeConnection` and
 `FakeDictionary` stand in for the driver, so the guardrail, masking, RBAC,
 discovery and audit paths are all exercised deterministically in a few seconds.
 
@@ -32,7 +32,7 @@ pytest --cov=oracle_mcp --cov-report=term-missing
 | `test_policy.py` | 17 | RBAC, clearance, denial wording, credential isolation, ATP wallet config |
 | `test_reconcile.py` | 12 | Set comparison, composite keys, normalisation, tool gating |
 | `test_server.py` | 7 | Tool registration, profile gating, health check |
-| `test_server.py` | 7 | FastMCP registration, schemas, protocol round-trip, profile gating |
+| `test_web_agent.py` | 6 | Standalone chat UI, tool dispatch, compare-tool gating |
 
 `pytest -m security` selects the 115 tests that assert a security control directly.
 

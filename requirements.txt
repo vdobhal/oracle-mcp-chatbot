@@ -9,6 +9,6 @@ python-dotenv>=1.0,<2.0
 # Python ships no CA bundle of its own (common with the macOS python.org build).
 certifi>=2024.2.2
 PyYAML>=6.0,<7.0
-# Standalone browser UI (python -m oracle_mcp.chat)
 fastapi>=0.115,<1.0
 uvicorn>=0.30,<1.0
+httpx>=0.27,<1.0

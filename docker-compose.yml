@@ -116,10 +116,47 @@ services:
       - recon-logs:/app/logs
     networks: [mcp-net]
 
+  # ---------------------------------------------------------------------------
+  chat-ui:
+    <<: *common
+    container_name: oracle-mcp-chat-ui
+    entrypoint: ["python", "-m", "oracle_mcp.webapp"]
+    environment:
+      <<: *common-env
+      ORACLE_MCP_PROFILE: both
+      ORACLE_MCP_PINNED_ROLE: ${CHAT_PINNED_ROLE:-analyst}
+      CHAT_UI_HOST: 0.0.0.0
+      CHAT_UI_PORT: "8080"
+      CHAT_LLM_KIND: ${CHAT_LLM_KIND:-openai}
+      CHAT_LLM_BASE_URL: ${CHAT_LLM_BASE_URL:-https://api.openai.com/v1}
+      CHAT_LLM_API_KEY: ${CHAT_LLM_API_KEY:-}
+      CHAT_LLM_MODEL: ${CHAT_LLM_MODEL:-gpt-4o}
+      CHAT_LLM_AZURE_API_VERSION: ${CHAT_LLM_AZURE_API_VERSION:-2024-10-21}
+      ONPREM_ENABLED: "true"
+      ONPREM_USER: ${ONPREM_USER}
+      ONPREM_PASSWORD: ${ONPREM_PASSWORD}
+      ONPREM_HOST: ${ONPREM_HOST}
+      ONPREM_PORT: ${ONPREM_PORT:-1521}
+      ONPREM_SERVICE_NAME: ${ONPREM_SERVICE_NAME}
+      ATP_ENABLED: "true"
+      ATP_USER: ${ATP_USER}
+      ATP_PASSWORD: ${ATP_PASSWORD}
+      ATP_DSN: ${ATP_DSN}
+      ATP_WALLET_DIR: /opt/oracle/wallets/atp
+      ATP_CONFIG_DIR: /opt/oracle/wallets/atp
+      ATP_WALLET_PASSWORD: ${ATP_WALLET_PASSWORD}
+    ports:
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - ${ATP_WALLET_HOST_PATH:?set ATP_WALLET_HOST_PATH}:/opt/oracle/wallets/atp:ro
+      - chat-logs:/app/logs
+    networks: [mcp-net]
+
 volumes:
   onprem-logs:
   atp-logs:
   recon-logs:
+  chat-logs:
 
 networks:
   mcp-net:

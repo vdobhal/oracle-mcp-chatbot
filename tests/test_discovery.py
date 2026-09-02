@@ -304,7 +304,7 @@ def test_naming_schemas_overrides_the_wildcard(discovery_policy_dir: Path):
 # ---- the deployed configuration -------------------------------------------
 
 
-def test_deployed_onprem_exposes_exactly_the_governed_objects(deployed_policy_dir: Path):
+def test_deployed_onprem_exposes_exactly_the_five_agreed_objects(deployed_policy_dir: Path):
     clear_policy_cache()
     store = PolicyStore(deployed_policy_dir, {"ONPREM": "onprem.yaml"})
     policy = store.database("ONPREM")

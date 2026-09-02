@@ -20,13 +20,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
 COPY config/ ./config/
+COPY prompts/ ./prompts/
+COPY web/ ./web/
 
 # Non-root, no shell, no home directory to write into.
 RUN groupadd --system --gid 10001 mcp \
  && useradd --system --uid 10001 --gid mcp --no-create-home --shell /usr/sbin/nologin mcp \
  && mkdir -p /app/logs /opt/oracle/wallets \
  && chown -R mcp:mcp /app/logs \
- && chmod 555 /app/src /app/config
+ && chmod 555 /app/src /app/config /app/prompts /app/web
 
 USER mcp
 
