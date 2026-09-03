@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .agent import ChatAgent, ChatLlm, LlmError, iter_sse, tools_for
+from .collibra import CollibraClient, DEFAULT_COLLIBRA_URL
 from .server import build_service, configure_logging
 from .settings import Settings, get_settings
 
@@ -30,6 +31,31 @@ STATIC_DIR = Path(__file__).resolve().parents[2] / "web" / "static"
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def collibra_from_env() -> CollibraClient | None:
+    raw_enabled = _env("COLLIBRA_MCP_ENABLED")
+    url = _env("COLLIBRA_MCP_URL", DEFAULT_COLLIBRA_URL)
+    api_key = _env("COLLIBRA_MCP_API_KEY") or _env("CHAT_LLM_API_KEY")
+
+    enabled = False
+    if raw_enabled:
+        enabled = raw_enabled.lower() in {"1", "true", "yes", "on"}
+    elif url and api_key:
+        enabled = True
+
+    if not enabled or not url:
+        return None
+
+    timeout = 30.0
+    raw_timeout = _env("COLLIBRA_MCP_TIMEOUT_SECONDS")
+    if raw_timeout:
+        try:
+            timeout = float(raw_timeout)
+        except ValueError:
+            pass
+
+    return CollibraClient(url=url, api_key=api_key, timeout_seconds=timeout)
 
 
 def llm_from_env() -> ChatLlm | None:
@@ -70,7 +96,7 @@ def create_app(
 ) -> FastAPI:
     settings = settings or get_settings()
     service = service or build_service(settings)
-    agent = agent or ChatAgent(service, llm_from_env())
+    agent = agent or ChatAgent(service, llm_from_env(), collibra=collibra_from_env())
     app = FastAPI(title="Oracle data assistant", docs_url=None, redoc_url=None)
     app.state.service = service
     app.state.agent = agent
@@ -88,30 +114,35 @@ def create_app(
         return {
             "ok": True,
             "llm_configured": agent.llm is not None,
+            "collibra_configured": agent.collibra is not None,
             "profile": settings.profile,
             "role": settings.pinned_role,
             "databases": databases,
             "reconciliation": settings.reconciliation_enabled,
-            "tools": [t["function"]["name"] for t in tools_for(service)],
+            "tools": [t["function"]["name"] for t in tools_for(service, agent.collibra)],
         }
 
     @app.get("/api/session")
     def session() -> dict[str, Any]:
         role = service.store.role(settings.pinned_role)
+        suggestions = [
+            "What customer information is available in ATP?",
+            "Show me all party roles.",
+            "How many systems are decommissioned?",
+            "Company, NAGP and GTC attributes for address CMAT ID 21757805.",
+            "Count install-base serials by product series.",
+        ]
+        if agent.collibra is not None:
+            suggestions.append("Check Collibra for IB Attributes domain location and assets.")
         return {
             "role": role.name,
             "clearance": role.clearance,
             "show_sql": role.show_sql,
             "user_id": settings.pinned_user_id,
             "llm_configured": agent.llm is not None,
+            "collibra_configured": agent.collibra is not None,
             "databases": service.registry.public_metadata(),
-            "suggestions": [
-                "What customer information is available in ATP?",
-                "Show me all party roles.",
-                "How many systems are decommissioned?",
-                "Company, NAGP and GTC attributes for address CMAT ID 21757805.",
-                "Count install-base serials by product series.",
-            ],
+            "suggestions": suggestions,
         }
 
     @app.post("/api/chat")

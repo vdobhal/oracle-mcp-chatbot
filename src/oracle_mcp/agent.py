@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from .collibra import COLLIBRA_TOOL_NAMES, CollibraClient
 from .tools import ToolService
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,10 @@ def load_system_prompt() -> str:
     )
 
 
-def tools_for(service: ToolService) -> list[dict[str, Any]]:
+def tools_for(
+    service: ToolService,
+    collibra: CollibraClient | None = None,
+) -> list[dict[str, Any]]:
     names = {
         "list_databases",
         "list_allowed_schemas",
@@ -197,7 +201,10 @@ def tools_for(service: ToolService) -> list[dict[str, Any]]:
     }
     if service.settings.reconciliation_enabled:
         names.add("compare_onprem_and_atp_data")
-    return [spec for spec in TOOL_SPECS if spec["function"]["name"] in names]
+    specs = [spec for spec in TOOL_SPECS if spec["function"]["name"] in names]
+    if collibra is not None:
+        specs.extend(collibra.list_tools())
+    return specs
 
 
 def compact_tool_result(payload: Any) -> str:
@@ -219,6 +226,21 @@ def summarise_tool_result(name: str, payload: dict[str, Any]) -> str:
         return f"{payload.get('validation_status') or status}"
     if name == "list_allowed_schemas":
         return f"{status}: {len(payload.get('schemas') or [])} schema(s)"
+    if name == "search_asset_keyword":
+        results = payload.get("results")
+        if isinstance(results, list):
+            return f"Found {len(results)} asset(s) (total {payload.get('total', len(results))})"
+    if name == "get_asset_details":
+        asset = payload.get("asset") or payload
+        if isinstance(asset, dict):
+            disp = asset.get("displayName") or asset.get("name") or "asset"
+            return f"Details for {disp}"
+    if name in {"get_table_semantics", "get_column_semantics", "get_business_term_data", "get_measure_data"}:
+        return f"{status}: Graph semantics resolved"
+    if name in {"discover_business_glossary", "discover_data_assets"}:
+        results = payload.get("results")
+        if isinstance(results, list):
+            return f"Found {len(results)} item(s)"
     return str(status)
 
 
@@ -285,9 +307,15 @@ class ChatLlm:
 class ChatAgent:
     """Runs one user question through the tool loop and returns a final answer."""
 
-    def __init__(self, service: ToolService, llm: ChatLlm | None) -> None:
+    def __init__(
+        self,
+        service: ToolService,
+        llm: ChatLlm | None,
+        collibra: CollibraClient | None = None,
+    ) -> None:
         self.service = service
         self.llm = llm
+        self.collibra = collibra
         self._dispatch: dict[str, Callable[..., dict[str, Any]]] = {
             "list_databases": lambda **_: service.list_databases(),
             "list_allowed_schemas": service.list_allowed_schemas,
@@ -306,6 +334,15 @@ class ChatAgent:
         return self.service.execute_readonly_sql(**kwargs)
 
     def invoke_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name in COLLIBRA_TOOL_NAMES or (self.collibra and name in {t["function"]["name"] for t in self.collibra.list_tools()}):
+            if self.collibra is None:
+                return {
+                    "status": "ERROR",
+                    "error_code": "COLLIBRA_NOT_CONFIGURED",
+                    "message": "Collibra MCP client is not configured. Enable COLLIBRA_MCP_ENABLED in .env.",
+                }
+            return self.collibra.invoke_tool(name, arguments)
+
         fn = self._dispatch.get(name)
         if fn is None:
             return {
@@ -345,7 +382,7 @@ class ChatAgent:
             if on_event is not None:
                 on_event(event)
 
-        tools = tools_for(self.service)
+        tools = tools_for(self.service, self.collibra)
         messages: list[dict[str, Any]] = [{"role": "system", "content": load_system_prompt()}]
         for turn in history or []:
             role = turn.get("role")

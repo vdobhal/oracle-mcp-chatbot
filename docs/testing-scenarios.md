@@ -1,6 +1,6 @@
 # Test plan
 
-228 automated tests run without an Oracle instance. `FakeConnection` and
+235 automated tests run without an Oracle instance. `FakeConnection` and
 `FakeDictionary` stand in for the driver, so the guardrail, masking, RBAC,
 discovery and audit paths are all exercised deterministically in a few seconds.
 

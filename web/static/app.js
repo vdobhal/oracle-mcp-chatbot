@@ -178,6 +178,16 @@ function fillSession(session, health) {
   const lp = document.getElementById("llm-pill");
   lp.textContent = health.llm_configured ? "Language model ready" : "Set CHAT_LLM_API_KEY";
   lp.className = "pill " + (health.llm_configured ? "ok" : "bad");
+  const cp = document.getElementById("collibra-pill");
+  if (cp) {
+    if (health.collibra_configured) {
+      cp.textContent = "Collibra connected";
+      cp.className = "pill ok";
+      cp.style.display = "";
+    } else {
+      cp.style.display = "none";
+    }
+  }
 }
 
 async function boot() {

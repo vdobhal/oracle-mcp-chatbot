@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import httpx
 from oracle_mcp.agent import ChatAgent, compact_tool_result, tools_for
+from oracle_mcp.collibra import CollibraClient
 from oracle_mcp.webapp import create_app
 
 
@@ -68,17 +70,183 @@ def test_compact_tool_result_truncates_large_payloads():
     assert len(blob) < 13_000
 
 
+def test_collibra_tools_advertised_when_client_configured(service):
+    collibra = CollibraClient(url="https://example.com/mcp", api_key="secret-token")
+    tools = tools_for(service, collibra=collibra)
+    names = {t["function"]["name"] for t in tools}
+    assert "search_asset_keyword" in names
+    assert "get_asset_details" in names
+    assert "validate_sql" in names
+
+
+def test_collibra_tool_without_configured_client_returns_helpful_error(service):
+    agent = ChatAgent(service, llm=None, collibra=None)
+    result = agent.invoke_tool("search_asset_keyword", {"query": "customer"})
+    assert result["status"] == "ERROR"
+    assert result["error_code"] == "COLLIBRA_NOT_CONFIGURED"
+
+
+def test_collibra_client_invoke_mcp_jsonrpc(monkeypatch):
+    def fake_post(url, headers, json, timeout):
+        assert headers.get("Authorization") == "Bearer fake-token"
+        assert json["method"] == "tools/call"
+        assert json["params"]["name"] == "search_asset_keyword"
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"results": [{"name": "Serial Number", "id": "123"}], "total": 1}',
+                        }
+                    ]
+                },
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = CollibraClient(url="https://example.com/mcp", api_key="fake-token")
+    result = client.invoke_tool("search_asset_keyword", {"query": "Serial Number"})
+    assert "results" in result
+    assert result["results"][0]["name"] == "Serial Number"
+
+
+def test_collibra_client_handles_sse_event_stream(monkeypatch):
+    sse_body = (
+        "event: message\r\n"
+        'data: {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "{\\"results\\": [{\\"name\\": \\"IB Attributes/Enrichments\\", \\"id\\": \\"uuid-999\\"}], \\"total\\": 1}"}]}}\r\n\r\n'
+    )
+
+    def fake_post(url, headers, json, timeout):
+        return httpx.Response(
+            200,
+            text=sse_body,
+            headers={"Content-Type": "text/event-stream"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = CollibraClient(url="https://example.com/mcp", api_key="fake-token")
+    result = client.invoke_tool("search_asset_keyword", {"query": "IB Attributes"})
+    assert "results" in result
+    assert result["results"][0]["name"] == "IB Attributes/Enrichments"
+    assert result["results"][0]["id"] == "uuid-999"
+
+
+def test_collibra_client_handles_multi_line_sse_stream(monkeypatch):
+    sse_body = (
+        "event: message\n"
+        'data: {"jsonrpc": "2.0", "method": "notifications/progress"}\n\n'
+        "event: message\n"
+        'data: {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "{\\"found\\": true, \\"name\\": \\"Serial Number\\"}"}]}}\n\n'
+    )
+
+    def fake_post(url, headers, json, timeout):
+        return httpx.Response(
+            200,
+            text=sse_body,
+            headers={"Content-Type": "text/event-stream"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = CollibraClient(url="https://example.com/mcp", api_key="fake-token")
+    result = client.invoke_tool("get_asset_details", {"assetId": "123"})
+    assert result.get("found") is True
+    assert result.get("name") == "Serial Number"
+
+
+def test_collibra_client_handles_403_scope_error(monkeypatch):
+    def fake_post(url, headers, json, timeout):
+        return httpx.Response(
+            403,
+            text='{"message": "Missing required scopes: dgc.ai-copilot"}',
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = CollibraClient(url="https://example.com/mcp", api_key="fake-token")
+    result = client.invoke_tool("discover_business_glossary", {"query": "customer"})
+    assert result["status"] == "ERROR"
+    assert result["error_code"] == "FORBIDDEN"
+    assert "dgc.ai-copilot" in result["message"]
+
+
+def test_agent_runs_collibra_tool_then_answers(service, monkeypatch):
+    def fake_post(url, headers, json, timeout):
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"results": [{"name": "IB Attributes/Enrichments", "id": "uuid-123"}], "total": 1}',
+                        }
+                    ]
+                },
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    collibra = CollibraClient(url="https://example.com/mcp", api_key="fake-token")
+    llm = ScriptedLlm(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "1",
+                        "function": {
+                            "name": "search_asset_keyword",
+                            "arguments": '{"query": "IB Attributes/Enrichments"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Answer:\nFound IB Attributes/Enrichments in Collibra.\n\nData Source Used:\n- Collibra",
+            },
+        ]
+    )
+    agent = ChatAgent(service, llm, collibra=collibra)
+    result = agent.run("Find IB Attributes/Enrichments in Collibra")
+    assert "Found IB Attributes/Enrichments in Collibra" in result["answer"]
+    assert result["tools"][0]["name"] == "search_asset_keyword"
+    assert "Found 1 asset(s)" in result["tools"][0]["summary"]
+
+
 def test_health_and_chat_endpoints(service):
     from fastapi.testclient import TestClient
 
     llm = ScriptedLlm(
         [{"role": "assistant", "content": "Hello from the test double."}]
     )
-    app = create_app(service.settings, service=service, agent=ChatAgent(service, llm))
+    collibra = CollibraClient(url="https://example.com/mcp", api_key="token")
+    app = create_app(
+        service.settings,
+        service=service,
+        agent=ChatAgent(service, llm, collibra=collibra),
+    )
     client = TestClient(app)
     health = client.get("/api/health").json()
     assert health["ok"] is True
+    assert health["collibra_configured"] is True
     assert "validate_sql" in health["tools"]
+    assert "search_asset_keyword" in health["tools"]
+
+    session = client.get("/api/session").json()
+    assert session["collibra_configured"] is True
+
     chat = client.post("/api/chat", json={"question": "hello", "history": []})
     assert chat.status_code == 200
     assert "test double" in chat.json()["answer"]
