@@ -57,6 +57,12 @@
       }
     },
 
+    "collibramcp": {
+      "_comment": "Collibra Data Governance Cloud (HTTP MCP via NetApp AI Gateway). Governance and catalog metadata only — not row-level Oracle data. If tools return 401/403, add Authorization: Bearer <gateway JWT> to headers (often the same token as CHAT_LLM_API_KEY).",
+      "url": "https://netaigateway.netapp.com/api/llm/netaiconnect/mcp/collibramcp/server",
+      "headers": {}
+    },
+
     "_oracle-reconciliation": {
       "_comment": "Remove the leading underscore to enable. This server holds BOTH credential sets and exposes compare_onprem_and_atp_data. Restrict to users who need reconciliation.",
       "command": "/absolute/path/to/oracle-mcp-chatbot/.venv/bin/python",

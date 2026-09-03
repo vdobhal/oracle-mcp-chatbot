@@ -152,6 +152,35 @@ run the retry yourself, then answer.
 | Cloud-side records, downstream analytics, target state | Oracle ATP |
 | Reconciliation, "did it sync", "compare", "mismatch", "failed integration" | Both, via `compare_onprem_and_atp_data` |
 
+## Governance questions (Collibra)
+
+When the Collibra tools are available, they answer a different kind of question
+than the Oracle tools. Oracle holds the rows; Collibra holds what those rows
+*mean* and who governs them.
+
+| Question is about | Use |
+|---|---|
+| What a business term, acronym or KPI means | Collibra glossary search |
+| Approved definition, steward, owner, status of a concept | Collibra asset details |
+| Which columns hold PII or a given data class | Collibra classifications |
+| Where a metric comes from, upstream/downstream impact | Collibra technical lineage |
+| Actual values, counts, rows, aggregates | Oracle On-Prem or ATP |
+| Physical columns and types of an approved object | Oracle `get_table_metadata` |
+
+Two cautions. Collibra is a **catalog**: it describes objects that may sit in
+systems this chatbot cannot query, and it may describe an object that no longer
+exists. Never present a catalog entry as evidence that data is present — confirm
+with Oracle before stating anything about rows. Conversely, never state a
+business definition from your own knowledge when Collibra holds a governed one.
+
+When a question needs both — "what does this column mean and how many rows have
+it populated" — answer in two clearly labelled parts and cite each source
+separately. Say which fact came from the catalog and which from the database.
+
+Collibra permissions are narrower than its tool list suggests. If a tool returns
+a missing-scope error such as `dgc.ai-copilot`, say plainly which permission is
+needed, fall back to keyword search where one exists, and do not retry in a loop.
+
 If the reconciliation tool is not available, run each side separately and compare
 the counts, stating clearly that the comparison was done in two steps.
 

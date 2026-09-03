@@ -47,23 +47,33 @@ its discovery scope because it declares none.
 The closest thing to how an end user experiences the system, and the only path
 that tests the agent's judgement rather than just the plumbing.
 
-Both servers are registered in `.cursor/mcp.json`, so a Cursor chat calls the
-tools itself. Restart Cursor after changing policy or server code — MCP servers
-are launched once per session.
+Both Oracle servers and **Collibra** are registered in `.cursor/mcp.json`, so a
+Cursor chat calls the tools itself. Restart Cursor after changing policy, server
+code, or MCP configuration — MCP servers are launched once per session.
 
-Nine tools are exposed: `list_allowed_schemas`, `list_allowed_tables`,
-`get_table_metadata`, `search_data_dictionary`, `validate_sql`,
-`execute_readonly_sql`, `explain_query_result`, and
+**Oracle MCP** (stdio, this repo): nine tools — `list_allowed_schemas`,
+`list_allowed_tables`, `get_table_metadata`, `search_data_dictionary`,
+`validate_sql`, `execute_readonly_sql`, `explain_query_result`, and
 `compare_onprem_and_atp_data` when both profiles are enabled.
+
+**Collibra MCP** (HTTP via NetApp AI Gateway): governance and catalog metadata —
+business terms, data assets, lineage, classifications, assessments. Use
+`discover_data_assets` / `discover_business_glossary` for open questions, or
+`search_asset_keyword` when you know the name. Collibra answers *what data means
+and how it is governed*; Oracle answers *what the rows contain*. Do not mix them
+up: a column definition lives in Collibra, a row count lives in Oracle.
 
 Questions that exercise real data:
 
 | Ask | Should reach |
 |---|---|
-| What customer information is available in ATP? | `HZ_PARTIES`, `NAPP_CX_*EXTRACTPVO` |
-| Show me all party roles | On-Prem `EIM_PR_ROLES` |
-| How many systems are decommissioned? | On-Prem `EIM_PR_SYSTEM` |
-| What tables hold service contract data? | `NAPP_SM_*`, `NAPP_CX_CONTRACT*` |
+| What customer information is available in ATP? | Oracle ATP — `HZ_PARTIES`, `NAPP_CX_*EXTRACTPVO` |
+| Show me all party roles | Oracle On-Prem — `EIM_PR_ROLES` |
+| How many systems are decommissioned? | Oracle On-Prem — `EIM_PR_SYSTEM` |
+| What tables hold service contract data? | Oracle ATP — `NAPP_SM_*`, `NAPP_CX_CONTRACT*` |
+| What does the business term "Customer" mean? | Collibra — `discover_business_glossary` |
+| Which columns are classified as PII? | Collibra — `search_data_class`, classifications |
+| Where does this KPI come from? | Collibra — measure → lineage tools |
 
 Then confirm it declines the things it should. Ask it to delete rows, or to
 query `GTM_CDM_MISMATCH_DUMP_22MAY`. A correct answer is a refusal with a reason,
