@@ -6,11 +6,11 @@ generates SELECT-only SQL, validates it, executes it under hard limits, masks
 sensitive values, and logs everything.
 
 Built with [FastMCP 3](https://gofastmcp.com), `python-oracledb` (thin mode) and
-`sqlglot`. 235 tests, no database required to run them.
+`sqlglot`. 243 tests, no database required to run them.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                        # 235 passed
+pytest                                        # 243 passed
 cp .env.example .env                          # add credentials
 python -m oracle_mcp.server --profile onprem --check
 python -m oracle_mcp.server --profile onprem

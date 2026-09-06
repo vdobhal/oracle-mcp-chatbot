@@ -1,6 +1,6 @@
 # Test plan
 
-235 automated tests run without an Oracle instance. `FakeConnection` and
+243 automated tests run without an Oracle instance. `FakeConnection` and
 `FakeDictionary` stand in for the driver, so the guardrail, masking, RBAC,
 discovery and audit paths are all exercised deterministically in a few seconds.
 
@@ -26,7 +26,7 @@ pytest --cov=oracle_mcp --cov-report=term-missing
 | File | Tests | Covers |
 |---|---|---|
 | `test_sql_guard.py` | 63 | SELECT-only, injection, obfuscation, allowlist, clearance, row limits, joins, binds |
-| `test_discovery.py` | 66 | Wildcard and scoped schemas, discovered columns, inferred classification, object exclusions, domain tagging, fail-closed |
+| `test_discovery.py` | 79 | Wildcard and scoped schemas, discovered columns, inferred classification, object exclusions, domain tagging, curated descriptions, fail-closed |
 | `test_tools.py` | 30 | Discovery tools, validate/execute trust chain, audit records, role binding |
 | `test_masking.py` | 20 | Name rules, classification masking, content scanners, Luhn, truncation |
 | `test_policy.py` | 17 | RBAC, clearance, denial wording, credential isolation, ATP wallet config |
@@ -101,6 +101,10 @@ ATP allowlists nothing and relies on the grant. Exercised in
 | Wildcard mode, data dictionary unreachable | Rejected — discovery fails closed |
 | Role scoped to named schemas on a wildcard database | Keeps its scope, `ACCESS_DENIED` elsewhere |
 | Deployed `onprem.yaml` | Exposes exactly the five agreed EIM objects |
+| Declared description on a discovered object | Returned by search and fed into its relevance score |
+| Curated object matched only by its description | Offered — the dictionary scan matches names alone |
+| Curated object on an unrelated question | Not offered — declared objects are scored, not stapled on |
+| Object the dictionary reports twice | Listed once |
 
 ### Row limits
 

@@ -157,9 +157,41 @@ domains:
     match:
       - "EIM"
 
-# No schemas are declared. Discovered objects carry no curated business
-# description, and their columns are classified from the naming rules in
-# masking.yaml rather than by a data steward. Declare an object here to give it
-# a proper description and hand-assigned column sensitivity; declared entries
-# take precedence over discovery.
-schemas: []
+# Declaring an object here does not narrow discovery - the rest of the schema
+# stays reachable. It attaches a curated description, which search_data_dictionary
+# shows and scores, so a steward can break a tie the object names alone cannot.
+#
+# Only objects whose name collides with a materially different one are declared.
+# The customer/GTC question is the worst offender: NAPP_CDM_TO_ATP_SYNC holds one
+# mastered row per address with company, NAGP, DP and GTC together, while
+# NAPP_GTM_CDM_INBOUND_MSGS holds the append-only screening feed - many rows per
+# address, and no company or NAGP name at all. Both match a search for "CMAT" or
+# "GTC", and picking the message log answers a customer question with a subset of
+# the fields and a stale row.
+#
+# Columns stay discovered: listing 51 of them here would go stale on the next
+# integration change, and masking.yaml already classifies them by naming rule.
+schemas:
+  - name: NAPPERP
+    description: NetApp ERP application schema - CDM/GTM integration and staging.
+    business_domain: Customer
+    objects:
+      - name: NAPP_CDM_TO_ATP_SYNC
+        object_type: TABLE
+        business_domain: Customer
+        description: >-
+          Mastered current-state customer record, one row per CMAT_ADDRESS_ID.
+          Authoritative for company, NAGP, DP, address and GTC/trade-compliance
+          attributes together. Use this for "what is true now" about a customer
+          or address. Prefer it over NAPP_GTM_CDM_INBOUND_MSGS and over any
+          _STG, _FY26 or dated copy.
+
+      - name: NAPP_GTM_CDM_INBOUND_MSGS
+        object_type: TABLE
+        business_domain: Customer
+        description: >-
+          Append-only log of inbound GTM screening messages. Many rows per
+          address, one per screening event, carrying only the GTC fields - DR,
+          RPL, SCREEN_DATE, ECS and EPCI expiry - with no company, NAGP or DP
+          name. Use only for screening history or integration troubleshooting;
+          for the current GTC values use NAPP_CDM_TO_ATP_SYNC.

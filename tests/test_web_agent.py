@@ -252,7 +252,7 @@ def test_health_and_chat_endpoints(service):
     assert "test double" in chat.json()["answer"]
     page = client.get("/")
     assert page.status_code == 200
-    assert b"MDM (CDM,IB, Collibra) Data Assistant" in page.content
+    assert b"MDM (CDM, IB, Collibra) Data Assistent" in page.content
 
 
 def test_collibra_parameter_normalization_and_prepare_create_asset(monkeypatch):

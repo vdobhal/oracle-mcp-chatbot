@@ -31,5 +31,5 @@ if __name__ == "__main__":
     except ValueError:
         port = 8090
 
-    print(f"Starting MDM (CDM,IB, Collibra) Data Assistant Web UI on http://{host}:{port} ...")
+    print(f"Starting MDM (CDM, IB, Collibra) Data Assistent Web UI on http://{host}:{port} ...")
     uvicorn.run("oracle_mcp.webapp:app", host=host, port=port, reload=True)

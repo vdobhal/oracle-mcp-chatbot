@@ -144,6 +144,26 @@ Neither key is a security control on its own. An excluded object is still
 readable by the database account; the exclusion only stops this chatbot from
 offering or accepting it.
 
+### Curated descriptions on a discovering policy
+
+A discovering database can still declare individual objects under `schemas:`.
+Doing so does not narrow discovery — the rest of the schema stays reachable — it
+attaches a description that `search_data_dictionary` returns and scores.
+
+This exists to break ties the object names cannot. On ATP,
+`NAPP_CDM_TO_ATP_SYNC` holds one mastered row per address with company, NAGP, DP
+and trade-compliance attributes together, while `NAPP_GTM_CDM_INBOUND_MSGS` is
+the append-only screening feed — many rows per address and no company name at
+all. Both match a search for "CMAT" or "GTC" on name alone, and choosing the
+feed answers a customer question with a fraction of the fields and a superseded
+row. A description is the only signal that separates them.
+
+Declared objects are scored alongside the dictionary rows rather than merely
+overlaid onto them, because the dictionary scan matches object names: an object
+whose description is the only thing matching the question would otherwise never
+appear. They are still scored, so a curated object is not appended to unrelated
+searches.
+
 ### Columns may be declared or inferred
 
 An object with a `columns:` block carries hand-assigned sensitivity per column.

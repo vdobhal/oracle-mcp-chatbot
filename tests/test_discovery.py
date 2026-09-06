@@ -54,6 +54,30 @@ class FakeDictionary:
             return ()
         return tuple(self.catalog.get(database, {}).get(schema, {}).get(object_name, []))
 
+    def search_objects(self, database, terms, limit, owners=None):  # noqa: ANN001, ANN201
+        """Name-only matching, which is all the real dictionary scan can do."""
+        self.calls.append(("search_objects", database))
+        rows = []
+        for owner, objects in self.catalog.get(database, {}).items():
+            if owners and owner not in owners:
+                continue
+            for name in objects:
+                if any(t.lower() in name.lower() for t in terms):
+                    rows.append({"OWNER": owner, "OBJECT_NAME": name, "OBJECT_TYPE": "TABLE"})
+        return rows[:limit]
+
+    def search_columns(self, database, terms, limit, owners=None):  # noqa: ANN001, ANN201
+        self.calls.append(("search_columns", database))
+        rows = []
+        for owner, objects in self.catalog.get(database, {}).items():
+            if owners and owner not in owners:
+                continue
+            for name, columns in objects.items():
+                for column in columns:
+                    if any(t.lower() in column.lower() for t in terms):
+                        rows.append({"OWNER": owner, "TABLE_NAME": name, "COLUMN_NAME": column})
+        return rows[:limit]
+
 
 ONPREM_CATALOG = {
     "ONPREM": {
@@ -100,6 +124,11 @@ def atp_store(discovery_policy_dir: Path):
 @pytest.fixture
 def atp_scoped_store(discovery_policy_dir: Path):
     return _store(discovery_policy_dir, {"ATP": "atp_scoped.yaml"}, ATP_CATALOG)
+
+
+@pytest.fixture
+def atp_curated_store(discovery_policy_dir: Path):
+    return _store(discovery_policy_dir, {"ATP": "atp_curated.yaml"}, ATP_CATALOG)
 
 
 # ---- strict allowlist, discovered columns ----------------------------------
@@ -684,3 +713,73 @@ def test_search_still_hides_discovered_columns_above_the_role_clearance(onprem_s
     }
     assert "EIM.EIM_PR_SYSTEM.TAX_ID" in cleared
     assert not any("TAX_ID" in h for h in analyst)
+
+
+# --------------------------------------------------------------------------- #
+# Curated descriptions on a discovering policy
+#
+# A discovering policy may still declare a few objects purely to describe them.
+# Search used to ignore those descriptions entirely, so the one signal a steward
+# had for telling a mastered table apart from the staging copy beside it never
+# reached the agent, and it answered customer questions off a message log.
+# --------------------------------------------------------------------------- #
+
+
+def _searched_tables(store, dictionary, text, role="analyst"):
+    from oracle_mcp.metadata import MetadataService
+
+    payload = MetadataService(store, dictionary).search("ATP", text, store.role(role))
+    return {t["qualified_name"]: t for t in payload["matching_tables"]}
+
+
+def test_search_shows_the_declared_description_on_a_discovered_object(atp_curated_store):
+    store, dictionary = atp_curated_store
+    hit = _searched_tables(store, dictionary, "accounts")["NAPP_READONLY.ACCOUNTS"]
+    assert "Mastered current-state" in hit["business_description"]
+    assert hit["business_domain"] == "Customer"
+
+
+def test_search_finds_a_curated_object_by_description_alone(atp_curated_store):
+    """The dictionary scan matches names only.
+
+    "mastered customer" appears nowhere in ACCOUNTS, so if the declared set is
+    not scored alongside the scan the steward can describe an object as
+    authoritative and still never have it offered.
+    """
+    store, dictionary = atp_curated_store
+    assert "NAPP_READONLY.ACCOUNTS" in _searched_tables(store, dictionary, "mastered customer")
+
+
+def test_a_described_object_outranks_an_undescribed_one(atp_curated_store):
+    store, dictionary = atp_curated_store
+    hits = _searched_tables(store, dictionary, "customer accounts")
+    assert hits["NAPP_READONLY.ACCOUNTS"]["confidence_score"] > 0
+
+
+def test_curated_search_does_not_offer_the_object_on_an_unrelated_question(atp_curated_store):
+    """Declared objects are scored, not stapled onto every result."""
+    store, dictionary = atp_curated_store
+    assert "NAPP_READONLY.ACCOUNTS" not in _searched_tables(store, dictionary, "salary")
+
+
+def test_curated_search_still_respects_schema_exclusions(atp_curated_store):
+    store, dictionary = atp_curated_store
+    hits = _searched_tables(store, dictionary, "stg dump")
+    assert not any(h.startswith("LEGACY_STAGING.") for h in hits)
+
+
+def test_dictionary_search_reports_each_object_once(atp_curated_store):
+    """ALL_OBJECTS can report one object twice - as a table and as its MVIEW."""
+    from oracle_mcp.metadata import MetadataService
+
+    store, dictionary = atp_curated_store
+    original = dictionary.search_objects
+
+    def doubled(database, terms, limit, owners=None):  # noqa: ANN001, ANN202
+        rows = original(database, terms, limit, owners)
+        return rows + rows
+
+    dictionary.search_objects = doubled
+    payload = MetadataService(store, dictionary).search("ATP", "accounts", store.role("analyst"))
+    names = [t["qualified_name"] for t in payload["matching_tables"]]
+    assert names.count("NAPP_READONLY.ACCOUNTS") == 1

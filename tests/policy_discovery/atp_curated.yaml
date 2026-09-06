@@ -1,0 +1,27 @@
+# Fixture: scoped discovery with a curated object on top. Mirrors the deployed
+# config/policy/atp.yaml, where a steward declares the handful of objects whose
+# names collide with a materially different one.
+database: ATP
+display_name: Oracle ATP
+description: Scoped-discovery fixture with declared descriptions, used by tests/test_discovery.py.
+
+allow_all_schemas: false
+discovered_schemas:
+  - NAPP_READONLY
+  - SALES
+excluded_schemas: [LEGACY_STAGING]
+default_schema: NAPP_READONLY
+
+schemas:
+  - name: NAPP_READONLY
+    description: Curated schema.
+    business_domain: Customer
+    objects:
+      # Named nothing like the question, so it is reachable only if the
+      # description is searched as well as the object name.
+      - name: ACCOUNTS
+        object_type: TABLE
+        business_domain: Customer
+        description: >-
+          Mastered current-state customer record. Authoritative for company and
+          screening attributes together. Prefer over the inbound message log.

@@ -646,20 +646,60 @@ class MetadataService:
                 and not policy.is_excluded_object(object_name)
             )
 
-        table_hits = [
-            {
-                "qualified_name": f"{r['OWNER']}.{r['OBJECT_NAME']}",
-                "schema_name": r["OWNER"],
-                "table_name": r["OBJECT_NAME"],
-                "object_type": r.get("OBJECT_TYPE", "TABLE"),
-                "business_description": "",
-                "business_domain": policy.domain_for(str(r["OBJECT_NAME"])) or r["OWNER"],
-                "data_sensitivity": "INTERNAL",
-                "confidence_score": round(_score(terms, str(r["OBJECT_NAME"]), "", ""), 3),
+        # A discovering policy may still declare a handful of objects to give
+        # them a curated description. Those objects are scored here alongside the
+        # dictionary rows rather than only overlaid onto them: the dictionary
+        # scan matches on object name, so an object whose description is the only
+        # thing matching the question would never appear at all. The declared set
+        # is small enough to score in full, and the description feeds _score, so
+        # a curated object outranks an undescribed near-match of the same name.
+        declared = {
+            obj.fqn: obj
+            for obj in policy.iter_objects()
+            if _visible(obj.schema, obj.name) and obj.rank <= role.clearance_rank
+        }
+
+        # Keyed by name so an object the dictionary reports twice - once per
+        # ALL_OBJECTS row, as a table and its materialized view - lands once.
+        by_fqn: dict[str, dict[str, Any]] = {}
+
+        def _add_table(owner: str, object_name: str, object_type: str) -> None:
+            fqn = f"{owner}.{object_name}"
+            if fqn in by_fqn:
+                return
+            described = declared.get(fqn)
+            description = described.description if described else ""
+            domain = (
+                described.business_domain
+                if described and described.business_domain
+                else policy.domain_for(object_name) or owner
+            )
+            by_fqn[fqn] = {
+                "qualified_name": fqn,
+                "schema_name": owner,
+                "table_name": object_name,
+                "object_type": object_type,
+                "business_description": description,
+                "business_domain": domain,
+                "data_sensitivity": described.sensitivity if described else "INTERNAL",
+                "confidence_score": round(_score(terms, object_name, description, domain), 3),
             }
-            for r in self.dictionary.search_objects(policy.database, terms, limit * 4, owners)
-            if _visible(str(r.get("OWNER", "")), str(r.get("OBJECT_NAME", "")))
-        ]
+
+        for r in self.dictionary.search_objects(policy.database, terms, limit * 4, owners):
+            owner = str(r.get("OWNER", ""))
+            object_name = str(r.get("OBJECT_NAME", ""))
+            if not _visible(owner, object_name):
+                continue
+            _add_table(owner, object_name, str(r.get("OBJECT_TYPE", "TABLE")))
+
+        # Declared objects the name scan missed. Only those the question
+        # actually matches, so a curated object does not ride along on every
+        # unrelated search.
+        for obj in declared.values():
+            if _score(terms, obj.name, obj.description, obj.business_domain) > 0:
+                _add_table(obj.schema, obj.name, obj.object_type)
+
+        table_hits = list(by_fqn.values())
 
         column_hits = []
         for r in self.dictionary.search_columns(policy.database, terms, limit * 4, owners):
@@ -693,8 +733,9 @@ class MetadataService:
             "matching_columns": column_hits[:limit],
             "match_count": len(table_hits) + len(column_hits),
             "notes": [
-                "Matched on object and column names in the data dictionary; this "
-                "database has no curated business descriptions.",
+                "Matched on object and column names in the data dictionary. Objects "
+                "carrying a business description were curated by a data steward; "
+                "prefer them over an undescribed near-match.",
                 "Sensitivity is inferred from column naming rules, not a data steward's "
                 "classification, so confirm before sharing results widely.",
             ],

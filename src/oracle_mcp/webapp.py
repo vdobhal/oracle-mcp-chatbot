@@ -97,7 +97,7 @@ def create_app(
     settings = settings or get_settings()
     service = service or build_service(settings)
     agent = agent or ChatAgent(service, llm_from_env(), collibra=collibra_from_env())
-    app = FastAPI(title="MDM (CDM,IB, Collibra) Data Assistant", docs_url=None, redoc_url=None)
+    app = FastAPI(title="MDM (CDM, IB, Collibra) Data Assistent", docs_url=None, redoc_url=None)
     app.state.service = service
     app.state.agent = agent
     app.state.settings = settings
@@ -190,7 +190,7 @@ app = create_app()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="MDM (CDM,IB, Collibra) Data Assistant chat UI")
+    parser = argparse.ArgumentParser(description="MDM (CDM, IB, Collibra) Data Assistent chat UI")
     parser.add_argument("--profile", choices=["onprem", "atp", "both"])
     parser.add_argument("--host", default="")
     parser.add_argument("--port", type=int, default=0)

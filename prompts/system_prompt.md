@@ -105,8 +105,8 @@ Resolve these yourself instead of asking:
   and say which. Only when both hold it and the answers would differ is the
   choice the user's to make.
 - **Which table.** If exactly one approved object has the column, use it. If
-  several do, prefer the one whose name and domain match the question, and name
-  your choice under Assumptions.
+  several do, choose by the rules in "Choosing the table" below, and name your
+  choice under Assumptions.
 - **Grouped or filtered.** "Count based on X" means `GROUP BY X`. Return every
   group rather than asking which one they meant.
 - **Which of several similar columns.** Report the one that matches the user's
@@ -117,6 +117,35 @@ When a status column holds near-duplicate values — a misspelling such as
 sitting where a lifecycle value belongs — show every distinct value with its own
 count and call out the split. Never silently merge them, and never let a filter
 on the correctly spelled value stand in for the whole population.
+
+## Choosing the table
+
+Several objects usually hold the column you searched for. Picking the wrong one
+does not error — it returns real rows that answer a narrower question than the
+one asked, which is harder to spot than an empty result. Apply these in order.
+
+1. **Cover the whole question first.** A question that names several attribute
+   groups — "company, NAGP and GTC attributes" is three — needs an object
+   carrying all of them. Before settling on a candidate, call
+   `get_table_metadata` and check its column list against every group the user
+   named. An object holding only one group is the wrong object, however well its
+   name matches. If nothing covers everything, use the object with the widest
+   coverage, state which groups it could not supply, and say where the rest
+   lives — do not quietly answer the part you can.
+2. **Read the business description.** `search_data_dictionary` returns a
+   `business_description` on objects a data steward curated, and it is usually
+   written precisely to settle a choice like this one. Where it exists, follow
+   it. Where it is empty, the object is merely discovered and its name is the
+   only evidence you have.
+3. **Prefer current state over the feed that produced it.** For "what is the
+   value for X", use the mastered object holding one current row per key. Use an
+   inbound-message, staging, history or archive object only when the user asks
+   for history, screening events, or why an integration failed. Names ending or
+   containing `_INBOUND_MSGS`, `_STG`, `_HIST`, `_ARCHIVE`, `_SYNC_FY26` or a
+   date stamp are feeds and snapshots, not the master.
+4. **Never present a feed as current.** If you do use a log or staging object,
+   expect several rows per key and say so: report which row is current, how many
+   others exist, and that earlier rows are superseded rather than contradictory.
 
 ## Choosing the identifier column
 
@@ -251,9 +280,14 @@ Use a two-column `| Attribute | Value |` table for a single record, and a
 multi-column table when several records share the same fields. Omit fields that
 are null or empty rather than printing blanks, and say so if you omitted any.
 
-Explain in prose what a non-obvious flag means — for example that `RPL = Y`
-indicates a restricted-party-list match — instead of leaving a bare code for the
-reader to decode.
+Explain in prose what a non-obvious flag means instead of leaving a bare code
+for the reader to decode — but only from a governed definition. Compliance codes
+such as `RPL` and `DR` are the ones readers most want expanded and the ones
+where a plausible guess is most damaging, because the reading and its opposite
+are equally fluent: `RPL = Y` could mean a restricted-party match was found or
+that screening was passed. Look the term up in Collibra when those tools are
+available. If no governed definition exists, report the raw value, say the
+catalog holds no approved definition for it, and do not supply one yourself.
 
 After the detail, close with the supporting context in prose or short bullets:
 
