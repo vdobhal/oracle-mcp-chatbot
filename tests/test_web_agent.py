@@ -65,9 +65,9 @@ def test_agent_runs_a_tool_then_answers(service):
 
 
 def test_compact_tool_result_truncates_large_payloads():
-    blob = compact_tool_result({"rows": ["x" * 20_000]})
+    blob = compact_tool_result({"rows": ["x" * 30_000]})
     assert "truncated" in blob
-    assert len(blob) < 13_000
+    assert len(blob) < 21_000
 
 
 def test_collibra_tools_advertised_when_client_configured(service):
@@ -252,4 +252,58 @@ def test_health_and_chat_endpoints(service):
     assert "test double" in chat.json()["answer"]
     page = client.get("/")
     assert page.status_code == 200
-    assert b"Oracle data assistant" in page.content
+    assert b"MDM (CDM,IB, Collibra) Data Assistant" in page.content
+
+
+def test_collibra_parameter_normalization_and_prepare_create_asset(monkeypatch):
+    captured_payloads = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured_payloads.append(json)
+        return httpx.Response(
+            status_code=200,
+            text='event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"status\\":\\"success\\",\\"domainOptions\\":[{\\"id\\":\\"d1\\",\\"name\\":\\"IB Mastering\\"}]}"}]}}\n\n',
+        )
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    client = CollibraClient(api_key="test-key")
+
+    # Test parameter normalization for get_table_semantics
+    client.invoke_tool("get_table_semantics", {"assetId": "uuid-123"})
+    assert captured_payloads[-1]["params"]["arguments"]["tableId"] == "uuid-123"
+
+    # Test parameter normalization for discover_business_glossary
+    client.invoke_tool("discover_business_glossary", {"query": "test query"})
+    assert captured_payloads[-1]["params"]["arguments"]["input"] == "test query"
+
+    # Test prepare_create_asset
+    result = client.invoke_tool("prepare_create_asset", {"assetType": "Data Attribute"})
+    assert result.get("status") in {"OK", "success"}
+    assert "IB Mastering" in str(result)
+
+
+def test_collibra_search_fallback_when_remote_returns_500(monkeypatch):
+    def fake_post_500(url, headers=None, json=None, timeout=None):
+        return httpx.Response(
+            status_code=200,
+            text='event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"HTTP 500: {\\"statusCode\\":500}"}],"isError":true}}\n\n',
+        )
+
+    monkeypatch.setattr("httpx.post", fake_post_500)
+    client = CollibraClient(api_key="test-key")
+
+    # When search_asset_keyword is called for IB Mastering domain and server returns 500,
+    # it must fall back to the catalog assets instead of raising error
+    res = client.invoke_tool(
+        "search_asset_keyword",
+        {"query": "*", "domainFilter": ["81e4cbc9-b20c-446c-8672-2617c153e327"]},
+    )
+    assert res.get("status") == "success"
+    assert res.get("total") == 14
+    names = {item["name"] for item in res.get("results", [])}
+    assert "Serial Number" in names
+    assert "Product Series" in names
+    assert "Platform" in names
+    assert "EOS Date" in names
+
+

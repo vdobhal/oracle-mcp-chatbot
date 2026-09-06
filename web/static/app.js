@@ -134,7 +134,7 @@ function welcome(session) {
   logEl.innerHTML = "";
   const intro = addBubble(
     "assistant",
-    "Ask a business question. I will only use approved Oracle objects, validate every SELECT, and cite the data source.\n\nIf a number is not in a tool result, I will not invent it."
+    "Ask a business question about CDM, Install Base (IB), or Collibra governance. I will validate every SELECT against approved MDM objects, search the Collibra catalog when needed, and cite the exact data source.\n\nIf a number is not in a tool result, I will not invent it."
   );
   const row = el("<div class='suggestions'></div>");
   for (const s of session.suggestions || []) {

@@ -97,7 +97,7 @@ def create_app(
     settings = settings or get_settings()
     service = service or build_service(settings)
     agent = agent or ChatAgent(service, llm_from_env(), collibra=collibra_from_env())
-    app = FastAPI(title="Oracle data assistant", docs_url=None, redoc_url=None)
+    app = FastAPI(title="MDM (CDM,IB, Collibra) Data Assistant", docs_url=None, redoc_url=None)
     app.state.service = service
     app.state.agent = agent
     app.state.settings = settings
@@ -177,7 +177,7 @@ def create_app(
         index = STATIC_DIR / "index.html"
         if not index.is_file():
             raise HTTPException(status_code=500, detail="Chat UI files are missing.")
-        return FileResponse(index)
+        return FileResponse(index, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -185,8 +185,12 @@ def create_app(
     return app
 
 
+# Default ASGI app instance for uvicorn (e.g. `uvicorn oracle_mcp.webapp:app`)
+app = create_app()
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Oracle data assistant chat UI")
+    parser = argparse.ArgumentParser(description="MDM (CDM,IB, Collibra) Data Assistant chat UI")
     parser.add_argument("--profile", choices=["onprem", "atp", "both"])
     parser.add_argument("--host", default="")
     parser.add_argument("--port", type=int, default=0)

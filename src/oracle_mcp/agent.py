@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "system_prompt.md"
 _MAX_TOOL_ROUNDS = 12
-_MAX_TOOL_RESULT_CHARS = 12_000
+_MAX_TOOL_RESULT_CHARS = 20_000
 
 
 TOOL_SPECS: list[dict[str, Any]] = [
@@ -208,6 +208,19 @@ def tools_for(
 
 
 def compact_tool_result(payload: Any) -> str:
+    if isinstance(payload, dict) and "results" in payload and isinstance(payload["results"], list):
+        cleaned_results = []
+        for item in payload["results"]:
+            if isinstance(item, dict):
+                cleaned = {
+                    k: v
+                    for k, v in item.items()
+                    if k not in {"createdBy", "createdOn", "lastModifiedOn"}
+                }
+                cleaned_results.append(cleaned)
+            else:
+                cleaned_results.append(item)
+        payload = {**payload, "results": cleaned_results}
     text = json.dumps(payload, default=str, ensure_ascii=False)
     if len(text) <= _MAX_TOOL_RESULT_CHARS:
         return text
@@ -241,6 +254,19 @@ def summarise_tool_result(name: str, payload: dict[str, Any]) -> str:
         results = payload.get("results")
         if isinstance(results, list):
             return f"Found {len(results)} item(s)"
+    if name == "prepare_create_asset":
+        domains = payload.get("domainOptions")
+        if isinstance(domains, list):
+            return f"Found {len(domains)} catalog domain(s)"
+        types = payload.get("assetTypeOptions")
+        if isinstance(types, list):
+            return f"Found {len(types)} asset type(s)"
+        return str(status)
+    if name == "list_asset_types":
+        types = payload.get("assetTypes")
+        if isinstance(types, list):
+            return f"Found {len(types)} asset type(s)"
+        return str(status)
     return str(status)
 
 

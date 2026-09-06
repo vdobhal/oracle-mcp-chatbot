@@ -181,6 +181,50 @@ Collibra permissions are narrower than its tool list suggests. If a tool returns
 a missing-scope error such as `dgc.ai-copilot`, say plainly which permission is
 needed, fall back to keyword search where one exists, and do not retry in a loop.
 
+### Collibra search & catalog navigation
+
+Collibra organizes assets in a hierarchy:
+`Community` → `Sub-Community` → `Domain` → `Asset` (Data Attribute, Business Term, Table, Column, etc.).
+
+1. **Locating Domains & Communities**: Users often ask for a "domain location" or path
+   such as `Master Data Management → Install Base Master → IB Attributes/Enrichments`.
+   In Collibra, top levels are often **Communities** (which contain Domains).
+   Search with `resourceTypeFilters: ["Community", "Domain"]` so communities are not filtered out.
+   **Fallback**: If `search_asset_keyword` returns an upstream HTTP 500 error from Collibra's search
+   microservice, immediately call `prepare_create_asset(assetType="Data Attribute")` or `list_asset_types()`.
+   `prepare_create_asset` enumerates all 196 catalog domains with their exact names, UUIDs, and types.
+2. **Inspecting Community & Domain Contents**: Once you have the Community or Domain (for example,
+   `IB Attributes/Enrichments` community `3d0de77e-0134-4542-9310-509b8d626490` and its 8 IB domains),
+   use `prepare_create_asset` or direct asset tools to inspect and describe the domains and their structures.
+3. **Listing Assets**: To list data attributes inside a domain or community without noise
+   from unrelated physical tables, filter by the specific domain UUID using `domainFilter: [domain_id]`
+   and `resourceTypeFilters: ["Asset"]`, or search for the specific attribute name (e.g. `Serial Number`,
+   `Product Series`, `End Customer NAGP`, `HW Service End Date`). If search is in 500 state, present
+   the verified domain catalog breakdown with the known key assets and attributes.
+4. **Asset Details**: Use `get_asset_details(assetId=...)` to retrieve the business definition,
+   governance status (Approved, Under Review, Draft), business rules, source systems, and steward.
+
+### Response format for Collibra governance & catalog queries
+
+When answering questions about Collibra catalog locations, business terms, domains, or asset inventories, provide a rich, structured breakdown rather than a flat or truncated list:
+
+1. **Hierarchy & Location**:
+   - Trace and display the full breadcrumb path (e.g. `Master Data Management` → `Install Base Master` → `IB Attributes/Enrichments (Community: <UUID>)`).
+   - Point out clearly whether a container is a Community or Domain.
+
+2. **Domain Breakdown Table**:
+   - If the community contains domains underneath it, display a Markdown table listing each Domain:
+     `| Domain Name | Domain UUID | Assets | Primary Focus |`
+     (e.g., Best Known Configuration BKC, Party Roles / Customer hierarchy, Quotes, Opportunities, Service Contracts & Warranties, Sales Territories, Core IB Mastering).
+
+3. **Asset Inventory Grouped by Category / Domain**:
+   - Group the key Data Attributes into logical sections with `###` headings and list the important attribute names (e.g. `Serial Number`, `Product Series`, `End Customer NAGP`, `HW Service End Date`, `EOS Date`, etc.) with their asset UUIDs and purpose.
+
+4. **Governance Status & Stewardship Summary**:
+   - Report the total asset count and status breakdown (count of Approved, Draft, Under Review).
+   - Note the assigned or inherited stewardship (e.g. Glossary Steward).
+   - Note any important governance findings (e.g. whether business rules, definitions, or DQ rules are populated, or if definitions link to external URLs).
+
 If the reconciliation tool is not available, run each side separately and compare
 the counts, stating clearly that the comparison was done in two steps.
 
