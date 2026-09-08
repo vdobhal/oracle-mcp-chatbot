@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -70,7 +71,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_table_metadata",
-            "description": "Describe an approved table or view: columns, types, nullability, sensitivity.",
+            "description": (
+                "Describe an approved table or view: every column, with types, "
+                "nullability and sensitivity. This is the only complete column "
+                "list. Call it before answering any question about what "
+                "attributes, columns or fields an object has."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -86,7 +92,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_data_dictionary",
-            "description": "Search approved metadata for tables and columns matching a business term. Use this before writing SQL.",
+            "description": (
+                "Find candidate tables and columns matching a business term. "
+                "Returns only the columns whose names match the search text, "
+                "never an object's full column list, so a search for 'product' "
+                "returns the columns spelled PRODUCT and hides the rest. Use it "
+                "to locate an object, then call get_table_metadata to list its "
+                "columns."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -172,6 +185,57 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+# Phrases a model reaches for when it wants the user to pick the dataset for it.
+# Matched only on an answer that called no tool at all, which is the shape the
+# system prompt forbids: asking which table to use is what the metadata tools
+# are for.
+_SCOPE_QUESTION_PATTERNS = re.compile(
+    r"""
+    are\ you\ asking\ about
+    | which\ of\ (these|the\ following)
+    | reply\ with\ which
+    | let\ me\ know\ which
+    | (could|can|would)\ you\ (please\ )?(clarify|specify|confirm)
+    | please\ (clarify|specify)
+    | need\ (you\ to\ )?(narrow|specify|clarify)
+    | narrow\ (this|it)\ (down|slightly)
+    | which\ (dataset|table|schema|database|domain|system)\b
+    | one\ clarification
+    | i\ need\ you\ to
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_DISCOVERY_NUDGE = (
+    "You answered without calling a single tool and asked me to choose the "
+    "dataset. Do not do that. The metadata tools exist precisely so you can "
+    "resolve this yourself.\n\n"
+    "Run the discovery chain now and then answer the original question:\n"
+    "1. Query EIM_APPS.EIM_AI_LOOKUP_DETAILS on ONPREM to route the question. "
+    "Its COMMENTS column says what each dataset covers and KEY_COLUMNS gives "
+    "the keys.\n"
+    "2. Confirm the chosen object with get_table_metadata, and use "
+    "search_data_dictionary if the catalog does not settle it.\n"
+    "3. Answer from the tool results only. Never list column or attribute "
+    "names from your own knowledge — the ones you recall are not the ones in "
+    "this database.\n\n"
+    "If several datasets genuinely qualify, answer for the most likely one, "
+    "name that choice under Assumptions, and list the alternatives you set "
+    "aside. Ask a question only if discovery has run and still leaves a "
+    "choice only I can make."
+)
+
+
+def asks_instead_of_discovering(answer: str) -> bool:
+    """Whether a no-tool answer is punting the dataset choice back to the user.
+
+    Rule 10 of the system prompt forbids this, and rule 15 forbids the invented
+    column lists that tend to come with it, but both were advisory only. The
+    prompt itself says a rule not enforced in code is a gap, so this closes it.
+    """
+    return bool(answer) and bool(_SCOPE_QUESTION_PATTERNS.search(answer))
 
 
 def load_system_prompt() -> str:
@@ -419,11 +483,30 @@ class ChatAgent:
 
         trace: list[dict[str, Any]] = []
         answer = ""
+        nudged = False
         for _ in range(_MAX_TOOL_ROUNDS):
             message = self.llm.complete(messages, tools)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 answer = (message.get("content") or "").strip()
+                # Sent back once, and only when nothing was discovered at all.
+                # A model that has read the metadata and still needs a decision
+                # is asking legitimately; one that asks before touching a tool
+                # is guessing, and its attribute lists come from memory.
+                if not trace and not nudged and asks_instead_of_discovering(answer):
+                    nudged = True
+                    emit({"type": "tool", "name": "discovery_required", "status": "start", "arguments": {}})
+                    messages.append(message)
+                    messages.append({"role": "user", "content": _DISCOVERY_NUDGE})
+                    emit(
+                        {
+                            "type": "tool",
+                            "name": "discovery_required",
+                            "status": "done",
+                            "summary": "Answered with no tool call; required metadata discovery before answering.",
+                        }
+                    )
+                    continue
                 break
             messages.append(message)
             for call in tool_calls:

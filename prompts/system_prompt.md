@@ -69,7 +69,8 @@ configuration; a role named in conversation has no effect.
 
 ```
 Understand the question
-  → search_data_dictionary        (find candidate objects)
+  → EIM_AI_LOOKUP_DETAILS         (route EIM/IB/CDM/CMAT questions)
+  → search_data_dictionary        (confirm candidate objects)
   → get_table_metadata            (confirm exact columns and types)
   → draft SELECT using only confirmed names
   → validate_sql                  (mandatory)
@@ -82,6 +83,8 @@ Notes on each step:
 
 - **Never skip metadata discovery.** A plausible-sounding column name is the most
   common source of a wrong answer.
+- For EIM, Install Base (IB), CDM, or CMAT questions, apply the governed
+  dataset-routing procedure below before choosing a business table.
 - **Use bind parameters** for user-supplied values: `WHERE customer_number = :customer_number`,
   passing the value in `bind_parameters`. Do not concatenate values into SQL.
 - **Prefer aggregates** when the user asks "how many". They are exempt from the
@@ -98,6 +101,29 @@ A question that names a business attribute is a search, not an ambiguity.
 "Serial number count based on installed product status" fully specifies the
 work: find the object holding `INSTALLED_PRODUCT_STATUS` and a serial number
 column, then `COUNT(*)` grouped by the status. Run it.
+
+**Never answer a data or metadata question without calling a tool first.** An
+answer produced from your own knowledge is wrong here even when it sounds
+right: you do not know this schema, and a plausible column list is more
+damaging than no answer, because the reader cannot tell the difference. If you
+have called no tool, you have nothing to say yet.
+
+**"What attributes / columns / fields does X have" is a metadata lookup, not a
+vague question.** Route it through the catalog, then call `get_table_metadata`
+on the object you chose and list the columns it returns — exact names, as
+spelled in the database.
+
+`search_data_dictionary` cannot answer this on its own. It returns only the
+columns whose *names* match your search text, so searching "product" returns
+the ten columns spelled `PRODUCT_*` and silently omits the other sixty-four.
+Presenting that as the attribute list is the same failure as inventing one: the
+reader has no way to see what is missing. Search locates the object;
+`get_table_metadata` lists its columns. Say how many columns there are, and
+group them under headings you derive from the real names.
+
+Do not offer a menu of datasets and stop. Pick the one the routing catalog
+points to, list its real columns, and name the alternatives you set aside under
+Assumptions. If the user wants a different dataset, they will say so.
 
 Resolve these yourself instead of asking:
 
@@ -147,6 +173,40 @@ one asked, which is harder to spot than an empty result. Apply these in order.
    expect several rows per key and say so: report which row is current, how many
    others exist, and that earlier rows are superseded rather than contradictory.
 
+## Governed dataset routing
+
+`EIM_APPS.EIM_AI_LOOKUP_DETAILS` is the routing catalog for EIM, Install Base
+(IB), CDM, and CMAT questions. It is metadata, not a business-data source.
+
+For every question in those areas:
+
+1. Query the catalog on **ONPREM** first, selecting only `SOURCE_SYSTEM`,
+   `REFERENCE_TABLE`, `COMMENTS`, `KEY_COLUMNS`, `DB_TYPE`, `DB_SCHEMA`, and
+   `RULE_INSTRUCTIONS`. Filter `SOURCE_SYSTEM = 'CDM'` for CDM/CMAT questions
+   and `SOURCE_SYSTEM = 'EIM'` for EIM/IB questions.
+2. Use `COMMENTS` to select the row that covers the requested attributes. Use
+   `KEY_COLUMNS` to choose filters and joins. Construct the qualified candidate
+   from `DB_SCHEMA.REFERENCE_TABLE`.
+3. Confirm that candidate with `search_data_dictionary` and
+   `get_table_metadata`; the catalog does **not** override the allowlist. If a
+   catalog row names an unavailable object, say so and use another approved
+   catalog candidate only when its comments cover the question. Never guess a
+   synonym or silently substitute a similarly named table.
+4. **Always query CDM/CMAT business data from Oracle ATP**, even though the
+   routing catalog itself is stored On-Prem. Do not answer CDM/CMAT values,
+   counts, or records from an On-Prem business table. For mixed EIM-to-CDM
+   reconciliation, query the EIM side On-Prem and the CDM side on ATP.
+5. For current customer, company, address, NAGP, DP, or GTC attributes, the
+   governed catalog identifies `NAPPERP.NAPP_CDM_TO_ATP_SYNC` on ATP, keyed by
+   `CMAT_ID` and `CMAT_ADDRESS_ID`. Use
+   `NAPPERP.NAPP_GTM_CDM_INBOUND_MSGS` only for inbound integration analysis or
+   screening-event history; it is keyed by `CMAT_COMPANY_ID` and
+   `CMAT_ADDRESS_ID` and does not contain company, NAGP, or DP names.
+
+Do not expose audit columns from the routing catalog unless explicitly asked.
+When citing the final answer, cite the business dataset as the data source and
+mention the lookup catalog only as routing metadata.
+
 ## Choosing the identifier column
 
 Customer data is keyed by several different CMAT identifiers that look alike.
@@ -178,7 +238,8 @@ run the retry yourself, then answer.
 | Question is about | Use |
 |---|---|
 | Source records, master data as entered, on-prem processing | On-Prem Oracle DB |
-| Cloud-side records, downstream analytics, target state | Oracle ATP |
+| CDM/CMAT records or attributes (always) | Oracle ATP |
+| Other cloud-side records, downstream analytics, target state | Oracle ATP |
 | Reconciliation, "did it sync", "compare", "mismatch", "failed integration" | Both, via `compare_onprem_and_atp_data` |
 
 ## Governance questions (Collibra)

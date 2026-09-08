@@ -164,6 +164,19 @@ whose description is the only thing matching the question would otherwise never
 appear. They are still scored, so a curated object is not appended to unrelated
 searches.
 
+### Governed dataset routing
+
+`EIM_APPS.EIM_AI_LOOKUP_DETAILS` is an allowlisted, read-only routing catalog
+for EIM, Install Base, CDM, and CMAT questions. Its `REFERENCE_TABLE`,
+`COMMENTS`, `KEY_COLUMNS`, `DB_TYPE`, and `DB_SCHEMA` fields tell the agent
+which candidate dataset covers the question, which keys connect it, and where
+it lives. The candidate must still pass normal schema/object authorization and
+metadata validation; a catalog row cannot widen the allowlist.
+
+CDM and CMAT business data always routes to Oracle ATP. Reading the routing
+catalog itself from On-Prem does not change that boundary. Mixed reconciliation
+uses On-Prem for the EIM side and ATP for the CDM side.
+
 ### Columns may be declared or inferred
 
 An object with a `columns:` block carries hand-assigned sensitivity per column.

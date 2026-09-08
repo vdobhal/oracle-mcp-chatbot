@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import httpx
-from oracle_mcp.agent import ChatAgent, compact_tool_result, tools_for
+import pytest
+from oracle_mcp.agent import (
+    ChatAgent,
+    asks_instead_of_discovering,
+    compact_tool_result,
+    tools_for,
+)
 from oracle_mcp.collibra import CollibraClient
 from oracle_mcp.webapp import create_app
 
@@ -62,6 +68,122 @@ def test_agent_runs_a_tool_then_answers(service):
     result = agent.run("which databases can you query?")
     assert "On-Prem" in result["answer"]
     assert result["tools"][0]["name"] == "list_databases"
+
+
+# --------------------------------------------------------------------------- #
+# Answering without discovering
+#
+# The model answered "list me product attributes" with a confident, entirely
+# invented column list and then asked which dataset to use, without calling a
+# single tool. Rules 10 and 15 of the system prompt forbid both halves of that,
+# but a system prompt is advisory, so the loop enforces it.
+# --------------------------------------------------------------------------- #
+
+
+ASKING_ANSWERS = [
+    "Are you asking about Install Base attributes or CDM attributes in ATP?",
+    "Reply with which of these you are interested in and I can list the columns.",
+    "I need one clarification before I can run a correct query.",
+    "Could you clarify which table holds the installed product status?",
+    "Which dataset would you like me to use?",
+    "To move forward, I need you to narrow this slightly.",
+]
+
+
+@pytest.mark.parametrize("text", ASKING_ANSWERS)
+def test_scope_questions_are_recognised_as_punting(text: str):
+    assert asks_instead_of_discovering(text) is True
+
+
+ANSWERING_REPLIES = [
+    "Hello from the test double.",
+    "There are 6,877,732 systems with status DECOMISSIONED.",
+    "The table has 74 columns: PART_NUMBER, PRODUCT_FAMILY, PRODUCT_LINE.",
+    # A genuine choice, but only after the metadata has been read.
+    "Both spellings exist. Do you want them merged?",
+]
+
+
+@pytest.mark.parametrize("text", ANSWERING_REPLIES)
+def test_real_answers_are_not_mistaken_for_punting(text: str):
+    assert asks_instead_of_discovering(text) is False
+
+
+def test_answering_without_a_tool_call_is_sent_back_for_discovery(service):
+    """The regression: no tool call, a menu of datasets, no real answer."""
+    llm = ScriptedLlm(
+        [
+            {
+                "role": "assistant",
+                "content": (
+                    "Core product identifiers: product family, product series, "
+                    "model code.\n\nAre you asking about Install Base "
+                    "attributes or the global product master?"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "list_databases", "arguments": "{}"}}
+                ],
+            },
+            {"role": "assistant", "content": "On-Prem and ATP are available."},
+        ]
+    )
+    agent = ChatAgent(service, llm)
+    result = agent.run("list me product attributes")
+
+    assert result["tools"][0]["name"] == "list_databases"
+    assert "Are you asking about" not in result["answer"]
+    assert "On-Prem" in result["answer"]
+
+
+def test_the_nudge_is_sent_at_most_once(service):
+    """A model that will not discover must not be looped at."""
+    llm = ScriptedLlm(
+        [
+            {"role": "assistant", "content": "Which dataset would you like?"},
+            {"role": "assistant", "content": "Which dataset would you like?"},
+        ]
+    )
+    agent = ChatAgent(service, llm)
+    result = agent.run("list me product attributes")
+
+    assert result["tools"] == []
+    assert result["answer"] == "Which dataset would you like?"
+    assert llm.replies == []
+
+
+def test_a_clarifying_question_after_discovery_is_left_alone(service):
+    """Rule 10 permits asking once the tools have run, so do not re-prompt."""
+    llm = ScriptedLlm(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "list_databases", "arguments": "{}"}}
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Both hold it. Which database would you like me to use?",
+            },
+        ]
+    )
+    agent = ChatAgent(service, llm)
+    result = agent.run("where does status live?")
+
+    assert len(result["tools"]) == 1
+    assert "Which database" in result["answer"]
+    assert llm.replies == []
+
+
+def test_a_plain_greeting_is_not_sent_back_for_discovery(service):
+    llm = ScriptedLlm([{"role": "assistant", "content": "Hello from the test double."}])
+    agent = ChatAgent(service, llm)
+    assert agent.run("hello")["answer"] == "Hello from the test double."
 
 
 def test_compact_tool_result_truncates_large_payloads():

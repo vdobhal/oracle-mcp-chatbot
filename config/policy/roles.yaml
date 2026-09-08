@@ -26,7 +26,7 @@ roles:
     allow_cartesian: false
     allow_reconciliation: false
     schemas:
-      ONPREM: [EIM]
+      ONPREM: [EIM, EIM_APPS]
       ATP: ["*"]
 
   analyst:
@@ -40,7 +40,7 @@ roles:
     allow_cartesian: false
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
+      ONPREM: [EIM, EIM_APPS]
       ATP: ["*"]
 
   architect:
@@ -54,7 +54,7 @@ roles:
     allow_cartesian: false
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
+      ONPREM: [EIM, EIM_APPS]
       ATP: ["*"]
 
   support:
@@ -68,7 +68,7 @@ roles:
     allow_cartesian: false
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
+      ONPREM: [EIM, EIM_APPS]
       ATP: ["*"]
 
   admin:
@@ -83,7 +83,7 @@ roles:
     allow_cartesian: true
     allow_reconciliation: true
     schemas:
-      ONPREM: [EIM]
+      ONPREM: [EIM, EIM_APPS]
       ATP: ["*"]
 
 # Role granted when no role can be resolved. Deliberately the weakest role.

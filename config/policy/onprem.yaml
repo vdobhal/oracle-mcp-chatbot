@@ -5,9 +5,10 @@
 # is technically granted. This is the second of three independent access layers
 # (DB grants -> this allowlist -> role clearance).
 #
-# This database is in strict allowlist mode: exactly the five objects below are
-# reachable and nothing else. Adding an object here is a governance decision,
-# so it goes through review rather than being discovered automatically.
+# This database is in strict allowlist mode: only the objects below are
+# reachable. Adding an object here is a governance decision, so it goes through
+# review rather than being discovered automatically. EIM_AI_LOOKUP_DETAILS is
+# routing metadata; it does not grant access to the reference tables it names.
 database: ONPREM
 display_name: On-Prem Oracle DB
 description: >-
@@ -62,6 +63,23 @@ schemas:
       - name: EIM_PR_ROLES
         type: TABLE
         description: Role assignments used by EIM processing.
+        business_domain: Reference Data
+        sensitivity: INTERNAL
+        large_table: false
+        require_filter: false
+
+  - name: EIM_APPS
+    description: EIM application metadata used to route AI questions.
+    business_domain: Reference Data
+    objects:
+      - name: EIM_AI_LOOKUP_DETAILS
+        type: TABLE
+        description: >-
+          Governed dataset-routing catalog for EIM, Install Base, CDM and CMAT
+          questions. REFERENCE_TABLE identifies the candidate dataset, COMMENTS
+          describes its purpose, KEY_COLUMNS gives the filter/join keys, and
+          DB_TYPE plus DB_SCHEMA identify where it lives. Catalog entries do
+          not override object allowlists.
         business_domain: Reference Data
         sensitivity: INTERNAL
         large_table: false

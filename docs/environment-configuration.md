@@ -208,7 +208,7 @@ anything that slips through is masked on the way out.
 
 The trade-off: a sensitive column whose name matches no rule is classified
 `INTERNAL` and will be readable by every role. Inference is a reasonable default,
-not a substitute for classification. Once you know these five objects, worth
+not a substitute for classification. Once you know these five business objects, worth
 reviewing their columns and either extending `masking.yaml` or pinning a
 `columns:` block on the object, which switches it to declared mode:
 
@@ -220,5 +220,5 @@ SELECT column_name, data_type, nullable
 ```
 
 Also note `require_filter: true` on the large EIM tables, which forces a `WHERE`
-clause so a question cannot turn into a full table scan. If any of the five is
+clause so a question cannot turn into a full table scan. If any of the five business objects is
 actually small, dropping the flag makes it easier to query.

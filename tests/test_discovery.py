@@ -333,7 +333,9 @@ def test_naming_schemas_overrides_the_wildcard(discovery_policy_dir: Path):
 # ---- the deployed configuration -------------------------------------------
 
 
-def test_deployed_onprem_exposes_exactly_the_five_agreed_objects(deployed_policy_dir: Path):
+def test_deployed_onprem_exposes_only_business_objects_and_routing_catalog(
+    deployed_policy_dir: Path,
+):
     clear_policy_cache()
     store = PolicyStore(deployed_policy_dir, {"ONPREM": "onprem.yaml"})
     policy = store.database("ONPREM")
@@ -345,7 +347,28 @@ def test_deployed_onprem_exposes_exactly_the_five_agreed_objects(deployed_policy
         "EIM.EIM_PR_ROLES",
         "EIM.EIM_PR_SN_SO_REF_PUB",
         "EIM.EIM_PR_SYSTEM",
+        "EIM_APPS.EIM_AI_LOOKUP_DETAILS",
     ]
+
+    lookup = policy.resolve_object("EIM_APPS", "EIM_AI_LOOKUP_DETAILS")
+    assert lookup.business_domain == "Reference Data"
+    assert "KEY_COLUMNS" in lookup.description
+
+    # The routing catalog names datasets; it must not make an undeclared
+    # reference table queryable.
+    assert policy.resolve_object("EIM", "EIM_CONFIG_DETAILS") is None
+
+
+def test_deployed_roles_can_read_lookup_metadata_but_not_arbitrary_schemas(
+    deployed_policy_dir: Path,
+):
+    clear_policy_cache()
+    store = PolicyStore(deployed_policy_dir, {"ONPREM": "onprem.yaml"})
+
+    for role_name in ("business_user", "analyst", "architect", "support", "admin"):
+        role = store.role(role_name)
+        assert role.can_see_schema("ONPREM", "EIM_APPS") is True
+        assert role.can_see_schema("ONPREM", "OTHER_APP") is False
 
 
 def test_deployed_atp_is_scoped_to_the_erp_schemas(deployed_policy_dir: Path):
