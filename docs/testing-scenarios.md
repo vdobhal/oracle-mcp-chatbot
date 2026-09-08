@@ -100,7 +100,7 @@ ATP allowlists nothing and relies on the grant. Exercised in
 | Wildcard mode, object absent from the dictionary | Rejected — the grant decides existence |
 | Wildcard mode, data dictionary unreachable | Rejected — discovery fails closed |
 | Role scoped to named schemas on a wildcard database | Keeps its scope, `ACCESS_DENIED` elsewhere |
-| Deployed `onprem.yaml` | Exposes the five agreed EIM business objects plus the read-only EIM AI routing catalog |
+| Deployed `onprem.yaml` | Exposes the EIM objects named in `EIM_AI_LOOKUP_DETAILS` plus the routing catalog |
 | Declared description on a discovered object | Returned by search and fed into its relevance score |
 | Curated object matched only by its description | Offered — the dictionary scan matches names alone |
 | Curated object on an unrelated question | Not offered — declared objects are scored, not stapled on |

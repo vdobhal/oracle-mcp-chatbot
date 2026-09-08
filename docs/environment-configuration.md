@@ -164,16 +164,21 @@ secret manager rather than a file on disk. Real environment variables override
 
 This is worth understanding because the security properties are not the same.
 
-**On-Prem is strictly allowlisted.** `config/policy/onprem.yaml` names five
-objects and nothing else in the database is reachable, whatever the grants say:
+**On-Prem is strictly allowlisted.** `config/policy/onprem.yaml` names the EIM
+business objects from `EIM_AI_LOOKUP_DETAILS` plus the routing catalog itself.
+Nothing else in the database is reachable, whatever the grants say:
 
 | Object | Filter required |
 |---|---|
 | `EIM.EIM_PR_SYSTEM` | yes |
 | `EIM.EIM_DRM_PRODUCT_DETAILS` | no |
+| `EIM.EIM_PR_SN_SO_REF` | yes |
 | `EIM.EIM_PR_SN_SO_REF_PUB` | yes |
 | `EIM.EIM_PR_IB_LATEST` | yes |
 | `EIM.EIM_PR_ROLES` | no |
+| `EIM.EIM_CONFIG_DETAILS` | yes |
+| `EIM.EIM_PR_HEADSWAP` | yes |
+| `EIM_APPS.EIM_AI_LOOKUP_DETAILS` | no |
 
 **ATP is in wildcard mode.** `allow_all_schemas: true` means every schema the
 `NAPP_READONLY` account can read is reachable, discovered live from the data
@@ -208,7 +213,7 @@ anything that slips through is masked on the way out.
 
 The trade-off: a sensitive column whose name matches no rule is classified
 `INTERNAL` and will be readable by every role. Inference is a reasonable default,
-not a substitute for classification. Once you know these five business objects, worth
+not a substitute for classification. Once you know these On-Prem objects, worth
 reviewing their columns and either extending `masking.yaml` or pinning a
 `columns:` block on the object, which switches it to declared mode:
 
@@ -220,5 +225,5 @@ SELECT column_name, data_type, nullable
 ```
 
 Also note `require_filter: true` on the large EIM tables, which forces a `WHERE`
-clause so a question cannot turn into a full table scan. If any of the five business objects is
+clause so a question cannot turn into a full table scan. If any of these objects is
 actually small, dropping the flag makes it easier to query.

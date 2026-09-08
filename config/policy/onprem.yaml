@@ -7,8 +7,9 @@
 #
 # This database is in strict allowlist mode: only the objects below are
 # reachable. Adding an object here is a governance decision, so it goes through
-# review rather than being discovered automatically. EIM_AI_LOOKUP_DETAILS is
-# routing metadata; it does not grant access to the reference tables it names.
+# review rather than being discovered automatically. Every On-Prem object named
+# in EIM_APPS.EIM_AI_LOOKUP_DETAILS is listed here so the routing catalog can
+# actually be followed. CDM objects in that catalog live on ATP, not here.
 database: ONPREM
 display_name: On-Prem Oracle DB
 description: >-
@@ -44,10 +45,42 @@ schemas:
         large_table: true
         require_filter: false
 
+      - name: EIM_PR_SN_SO_REF
+        type: TABLE
+        description: >-
+          Serial number to sales order cross-reference. The routing catalog
+          requires EIM_STATUS = 'ACTIVE' on this object.
+        business_domain: Sales Order
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
       - name: EIM_PR_SN_SO_REF_PUB
         type: TABLE
-        description: Serial number to sales order cross-reference.
+        description: Published serial number to sales order cross-reference.
         business_domain: Sales Order
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_CONFIG_DETAILS
+        type: TABLE
+        description: >-
+          Shelf and device configuration for a system, keyed by PRIMARY_SN.
+          SOURCE distinguishes the feed: BKC and BKC_AIQ are ASUP-derived
+          current config; SOURCE like ERP is as-sold config. One serial
+          produces many rows (one per shelf/device line), not one header.
+        business_domain: Install Base
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_PR_HEADSWAP
+        type: TABLE
+        description: >-
+          Head-swap history. FROM_SERIAL_NUMBER is the old/failed serial;
+          TO_SERIAL_NUMBER is the replacement.
+        business_domain: Install Base
         sensitivity: INTERNAL
         large_table: true
         require_filter: true
@@ -78,8 +111,8 @@ schemas:
           Governed dataset-routing catalog for EIM, Install Base, CDM and CMAT
           questions. REFERENCE_TABLE identifies the candidate dataset, COMMENTS
           describes its purpose, KEY_COLUMNS gives the filter/join keys, and
-          DB_TYPE plus DB_SCHEMA identify where it lives. Catalog entries do
-          not override object allowlists.
+          DB_TYPE plus DB_SCHEMA identify where it lives. On-Prem objects it
+          names are allowlisted in this file; CDM objects it names live on ATP.
         business_domain: Reference Data
         sensitivity: INTERNAL
         large_table: false

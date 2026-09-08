@@ -188,10 +188,13 @@ For every question in those areas:
    `KEY_COLUMNS` to choose filters and joins. Construct the qualified candidate
    from `DB_SCHEMA.REFERENCE_TABLE`.
 3. Confirm that candidate with `search_data_dictionary` and
-   `get_table_metadata`; the catalog does **not** override the allowlist. If a
-   catalog row names an unavailable object, say so and use another approved
-   catalog candidate only when its comments cover the question. Never guess a
-   synonym or silently substitute a similarly named table.
+   `get_table_metadata`. The On-Prem objects named in the catalog are
+   allowlisted. If a catalog row still names an unavailable object, say so
+   and use another approved catalog candidate only when its comments cover
+   the question. Never guess a synonym or silently substitute a similarly
+   named table. In particular, do not substitute `EIM_PR_SYSTEM` for
+   `EIM_CONFIG_DETAILS` when the user asked for config, shelf, or device
+   details — system attributes are not a shelf inventory.
 4. **Always query CDM/CMAT business data from Oracle ATP**, even though the
    routing catalog itself is stored On-Prem. Do not answer CDM/CMAT values,
    counts, or records from an On-Prem business table. For mixed EIM-to-CDM
@@ -202,6 +205,13 @@ For every question in those areas:
    `NAPPERP.NAPP_GTM_CDM_INBOUND_MSGS` only for inbound integration analysis or
    screening-event history; it is keyed by `CMAT_COMPANY_ID` and
    `CMAT_ADDRESS_ID` and does not contain company, NAGP, or DP names.
+6. For **config, shelf, or device details**, use `EIM.EIM_CONFIG_DETAILS` on
+   On-Prem, keyed by `PRIMARY_SN` (also check `VS_SN`, `SECONDARY_SN`, and
+   `SHELF_SERIAL_NUMBER` if `PRIMARY_SN` is empty). Filter `SOURCE`:
+   `BKC` / `BKC_AIQ` (and values starting with those) are ASUP-derived current
+   config; values containing `ERP` are as-sold config. Expect many rows per
+   serial — one per shelf/device line. Group by `SOURCE` family when both
+   current and as-sold are present, and say which you used.
 
 Do not expose audit columns from the routing catalog unless explicitly asked.
 When citing the final answer, cite the business dataset as the data source and
@@ -218,7 +228,7 @@ exist", which is the most common wrong answer on these tables.
 | "address CMAT ID", "site ID", "address ID", "ship-to" | `CMAT_ADDRESS_ID` |
 | "company CMAT ID", "customer ID", "party ID", or a bare "CMAT ID" | `CMAT_ID` |
 | "NAGP ID" | `NAGP_ID` |
-| "DP ID" | `DP_ID` |
+| "serial number", "SN", "system serial" | `SYSTEM_SERIAL_NUMBER` or `PRIMARY_SN` on config |
 
 Read the qualifier before the words "CMAT ID". "Address CMAT ID 21757805" means
 `CMAT_ADDRESS_ID = '21757805'`, not `CMAT_ID`.

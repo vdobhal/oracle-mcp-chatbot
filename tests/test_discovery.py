@@ -342,9 +342,12 @@ def test_deployed_onprem_exposes_only_business_objects_and_routing_catalog(
 
     assert policy.allow_all_schemas is False
     assert sorted(o.fqn for o in policy.iter_objects()) == [
+        "EIM.EIM_CONFIG_DETAILS",
         "EIM.EIM_DRM_PRODUCT_DETAILS",
+        "EIM.EIM_PR_HEADSWAP",
         "EIM.EIM_PR_IB_LATEST",
         "EIM.EIM_PR_ROLES",
+        "EIM.EIM_PR_SN_SO_REF",
         "EIM.EIM_PR_SN_SO_REF_PUB",
         "EIM.EIM_PR_SYSTEM",
         "EIM_APPS.EIM_AI_LOOKUP_DETAILS",
@@ -354,9 +357,13 @@ def test_deployed_onprem_exposes_only_business_objects_and_routing_catalog(
     assert lookup.business_domain == "Reference Data"
     assert "KEY_COLUMNS" in lookup.description
 
-    # The routing catalog names datasets; it must not make an undeclared
-    # reference table queryable.
-    assert policy.resolve_object("EIM", "EIM_CONFIG_DETAILS") is None
+    config = policy.resolve_object("EIM", "EIM_CONFIG_DETAILS")
+    assert config is not None
+    assert config.require_filter is True
+    assert policy.resolve_object("EIM", "EIM_PR_HEADSWAP") is not None
+    assert policy.resolve_object("EIM", "EIM_PR_SN_SO_REF") is not None
+    # Still not an open grant: an object the catalog does not name stays closed.
+    assert policy.resolve_object("EIM", "EIM_PR_SECRETS") is None
 
 
 def test_deployed_roles_can_read_lookup_metadata_but_not_arbitrary_schemas(
