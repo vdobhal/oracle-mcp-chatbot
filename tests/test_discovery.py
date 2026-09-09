@@ -366,6 +366,31 @@ def test_deployed_onprem_exposes_only_business_objects_and_routing_catalog(
     assert policy.resolve_object("EIM", "EIM_PR_SECRETS") is None
 
 
+def test_headswap_warns_against_the_status_filter_that_belongs_to_sn_so_ref(
+    deployed_policy_dir: Path,
+):
+    """Same column name, different code domain, silent wrong answer.
+
+    The routing catalog tells the agent to filter EIM_STATUS = 'ACTIVE', but
+    that note sits on the EIM_PR_SN_SO_REF row. On EIM_PR_HEADSWAP the column
+    holds single letters and never holds 'ACTIVE', so carrying the rule across
+    returns zero rows and reads as "the head-swap never happened". The
+    descriptions have to carry the distinction, because search and
+    get_table_metadata are the only places the agent can learn it.
+    """
+    clear_policy_cache()
+    store = PolicyStore(deployed_policy_dir, {"ONPREM": "onprem.yaml"})
+    policy = store.database("ONPREM")
+
+    headswap = policy.resolve_object("EIM", "EIM_PR_HEADSWAP").description
+    assert "Do NOT filter EIM_STATUS" in headswap
+    assert "EIM_PR_SN_SO_REF" in headswap
+
+    so_ref = policy.resolve_object("EIM", "EIM_PR_SN_SO_REF").description
+    assert "here only" in so_ref
+    assert "ACTIVE" in so_ref
+
+
 def test_deployed_roles_can_read_lookup_metadata_but_not_arbitrary_schemas(
     deployed_policy_dir: Path,
 ):

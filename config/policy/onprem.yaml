@@ -49,7 +49,9 @@ schemas:
         type: TABLE
         description: >-
           Serial number to sales order cross-reference. The routing catalog
-          requires EIM_STATUS = 'ACTIVE' on this object.
+          requires EIM_STATUS = 'ACTIVE' on this object, and that rule applies
+          here only. EIM_STATUS holds word codes on this table: ACTIVE,
+          INACTIVE, DECOMISSIONED, INVALID.
         business_domain: Sales Order
         sensitivity: INTERNAL
         large_table: true
@@ -79,7 +81,11 @@ schemas:
         type: TABLE
         description: >-
           Head-swap history. FROM_SERIAL_NUMBER is the old/failed serial;
-          TO_SERIAL_NUMBER is the replacement.
+          TO_SERIAL_NUMBER is the replacement. Do NOT filter EIM_STATUS =
+          'ACTIVE' here - that rule belongs to EIM_PR_SN_SO_REF. On this table
+          EIM_STATUS holds single-letter codes (S, E, H, N, C) and HS_STATUS is
+          'C', so an 'ACTIVE' filter matches nothing and looks like the
+          head-swap never happened. Query by serial alone.
         business_domain: Install Base
         sensitivity: INTERNAL
         large_table: true

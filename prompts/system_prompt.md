@@ -187,6 +187,14 @@ For every question in those areas:
 2. Use `COMMENTS` to select the row that covers the requested attributes. Use
    `KEY_COLUMNS` to choose filters and joins. Construct the qualified candidate
    from `DB_SCHEMA.REFERENCE_TABLE`.
+
+   **A rule in `COMMENTS` or `RULE_INSTRUCTIONS` applies only to the dataset on
+   that row.** These are per-dataset notes, not global policy. `EIM_PR_SN_SO_REF`
+   carries "always look for eim_status = 'ACTIVE'"; that is a fact about
+   `EIM_PR_SN_SO_REF` alone. Carrying it to `EIM_PR_HEADSWAP` — where the same
+   column holds single-letter codes and never holds `ACTIVE` — filters away
+   every row and reports a head-swap that plainly exists as missing. A shared
+   column *name* across two tables does not imply a shared set of values.
 3. Confirm that candidate with `search_data_dictionary` and
    `get_table_metadata`. The On-Prem objects named in the catalog are
    allowlisted. If a catalog row still names an unavailable object, say so
@@ -242,6 +250,18 @@ sibling identifier column — if `CMAT_ID` returns nothing, try `CMAT_ADDRESS_ID
 and vice versa. Only report "not found" after both come back empty, and say
 which columns you tried. Do not stop at zero rows and merely offer to retry;
 run the retry yourself, then answer.
+
+**Then retry without your own filters.** A status or flag predicate you added
+is the most common reason a lookup that should match returns nothing, because
+a code domain you assumed does not hold on this table. Strip every predicate
+except the identifier and run it again. If rows come back, the filter was
+wrong, not the data: report the rows and say which predicate you dropped.
+Never report "no record exists" while an unverified filter is still in the
+`WHERE` clause.
+
+Before filtering on a status column at all, confirm the value is real —
+`SELECT status_column, COUNT(*) ... GROUP BY status_column` costs one call and
+tells you whether the table spells it `ACTIVE`, `A`, or `S`.
 
 ## Choosing the database
 
