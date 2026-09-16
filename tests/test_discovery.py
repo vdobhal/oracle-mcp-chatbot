@@ -333,7 +333,7 @@ def test_naming_schemas_overrides_the_wildcard(discovery_policy_dir: Path):
 # ---- the deployed configuration -------------------------------------------
 
 
-def test_deployed_onprem_exposes_only_business_objects_and_routing_catalog(
+def test_deployed_onprem_exposes_exactly_the_approved_tables(
     deployed_policy_dir: Path,
 ):
     clear_policy_cache()
@@ -348,14 +348,8 @@ def test_deployed_onprem_exposes_only_business_objects_and_routing_catalog(
         "EIM.EIM_PR_IB_LATEST",
         "EIM.EIM_PR_ROLES",
         "EIM.EIM_PR_SN_SO_REF",
-        "EIM.EIM_PR_SN_SO_REF_PUB",
         "EIM.EIM_PR_SYSTEM",
-        "EIM_APPS.EIM_AI_LOOKUP_DETAILS",
     ]
-
-    lookup = policy.resolve_object("EIM_APPS", "EIM_AI_LOOKUP_DETAILS")
-    assert lookup.business_domain == "Reference Data"
-    assert "KEY_COLUMNS" in lookup.description
 
     config = policy.resolve_object("EIM", "EIM_CONFIG_DETAILS")
     assert config is not None
@@ -391,7 +385,7 @@ def test_headswap_warns_against_the_status_filter_that_belongs_to_sn_so_ref(
     assert "ACTIVE" in so_ref
 
 
-def test_deployed_roles_can_read_lookup_metadata_but_not_arbitrary_schemas(
+def test_deployed_roles_are_scoped_to_eim_only(
     deployed_policy_dir: Path,
 ):
     clear_policy_cache()
@@ -399,7 +393,8 @@ def test_deployed_roles_can_read_lookup_metadata_but_not_arbitrary_schemas(
 
     for role_name in ("business_user", "analyst", "architect", "support", "admin"):
         role = store.role(role_name)
-        assert role.can_see_schema("ONPREM", "EIM_APPS") is True
+        assert role.can_see_schema("ONPREM", "EIM") is True
+        assert role.can_see_schema("ONPREM", "EIM_APPS") is False
         assert role.can_see_schema("ONPREM", "OTHER_APP") is False
 
 

@@ -7,9 +7,8 @@
 #
 # This database is in strict allowlist mode: only the objects below are
 # reachable. Adding an object here is a governance decision, so it goes through
-# review rather than being discovered automatically. Every On-Prem object named
-# in EIM_APPS.EIM_AI_LOOKUP_DETAILS is listed here so the routing catalog can
-# actually be followed. CDM objects in that catalog live on ATP, not here.
+# review rather than being discovered automatically. This deployment is scoped
+# to the seven EIM tables approved by the database owner.
 database: ONPREM
 display_name: On-Prem Oracle DB
 description: >-
@@ -57,14 +56,6 @@ schemas:
         large_table: true
         require_filter: true
 
-      - name: EIM_PR_SN_SO_REF_PUB
-        type: TABLE
-        description: Published serial number to sales order cross-reference.
-        business_domain: Sales Order
-        sensitivity: INTERNAL
-        large_table: true
-        require_filter: true
-
       - name: EIM_CONFIG_DETAILS
         type: TABLE
         description: >-
@@ -102,23 +93,6 @@ schemas:
       - name: EIM_PR_ROLES
         type: TABLE
         description: Role assignments used by EIM processing.
-        business_domain: Reference Data
-        sensitivity: INTERNAL
-        large_table: false
-        require_filter: false
-
-  - name: EIM_APPS
-    description: EIM application metadata used to route AI questions.
-    business_domain: Reference Data
-    objects:
-      - name: EIM_AI_LOOKUP_DETAILS
-        type: TABLE
-        description: >-
-          Governed dataset-routing catalog for EIM, Install Base, CDM and CMAT
-          questions. REFERENCE_TABLE identifies the candidate dataset, COMMENTS
-          describes its purpose, KEY_COLUMNS gives the filter/join keys, and
-          DB_TYPE plus DB_SCHEMA identify where it lives. On-Prem objects it
-          names are allowlisted in this file; CDM objects it names live on ATP.
         business_domain: Reference Data
         sensitivity: INTERNAL
         large_table: false

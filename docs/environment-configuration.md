@@ -15,7 +15,7 @@ no passwords.
 | Host | `ONPREM_HOST` | `raceim02s-scan.corp.netapp.com` |
 | Port | `ONPREM_PORT` | `7020` |
 | Service | `ONPREM_SERVICE_NAME` | `s2eim_etl.corp.netapp.com` |
-| User | `ONPREM_USER` | `eim_apps` |
+| User | `ONPREM_USER` | `EIM_APPSRO` |
 | Password | `ONPREM_PASSWORD` | in `.env` |
 
 Resolves to the EZConnect DSN
@@ -65,22 +65,11 @@ server log line above it carries the Oracle error code.
 
 ## Open items
 
-### 1. `eim_apps` is an application account, not a read-only one
+### 1. Verify the `EIM_APPSRO` database grants
 
-This is the most significant gap. The design assumes the database account is
-least-privilege, and that assumption is load-bearing: the object allowlist and
-SQL guardrails are layers 2 and 4 of five, but **layer 1 is the database grant
-itself**. It is the only layer that still holds if the application has a bug.
-
-An application account typically carries `INSERT`, `UPDATE`, `DELETE` and often
-`CREATE` on its own schema. With those grants, the only thing preventing a write
-is the guardrail code, and a single-layer defence is exactly what this
-architecture is built to avoid.
-
-Recommended: create a dedicated read-only account using
-[`sql/01_readonly_user_onprem.sql`](../sql/01_readonly_user_onprem.sql), granting
-only `CREATE SESSION` plus `SELECT` on the objects you want exposed. Then confirm
-the boundary directly rather than assuming it:
+The supplied account is named as a read-only account, but its grants still need
+to be verified. It should have only `CREATE SESSION` and `SELECT` on the seven
+approved objects. Confirm the boundary directly:
 
 ```sql
 -- as the chatbot account; must fail with ORA-01031
@@ -164,21 +153,19 @@ secret manager rather than a file on disk. Real environment variables override
 
 This is worth understanding because the security properties are not the same.
 
-**On-Prem is strictly allowlisted.** `config/policy/onprem.yaml` names the EIM
-business objects from `EIM_AI_LOOKUP_DETAILS` plus the routing catalog itself.
-Nothing else in the database is reachable, whatever the grants say:
+**On-Prem is strictly allowlisted.** `config/policy/onprem.yaml` names exactly
+the seven approved EIM tables. Nothing else in the database is reachable,
+whatever the grants say:
 
 | Object | Filter required |
 |---|---|
 | `EIM.EIM_PR_SYSTEM` | yes |
 | `EIM.EIM_DRM_PRODUCT_DETAILS` | no |
 | `EIM.EIM_PR_SN_SO_REF` | yes |
-| `EIM.EIM_PR_SN_SO_REF_PUB` | yes |
 | `EIM.EIM_PR_IB_LATEST` | yes |
 | `EIM.EIM_PR_ROLES` | no |
 | `EIM.EIM_CONFIG_DETAILS` | yes |
 | `EIM.EIM_PR_HEADSWAP` | yes |
-| `EIM_APPS.EIM_AI_LOOKUP_DETAILS` | no |
 
 **ATP is in wildcard mode.** `allow_all_schemas: true` means every schema the
 `NAPP_READONLY` account can read is reachable, discovered live from the data

@@ -164,20 +164,11 @@ whose description is the only thing matching the question would otherwise never
 appear. They are still scored, so a curated object is not appended to unrelated
 searches.
 
-### Governed dataset routing
+### On-Prem dataset routing
 
-`EIM_APPS.EIM_AI_LOOKUP_DETAILS` is an allowlisted, read-only routing catalog
-for EIM, Install Base, CDM, and CMAT questions. Its `REFERENCE_TABLE`,
-`COMMENTS`, `KEY_COLUMNS`, `DB_TYPE`, and `DB_SCHEMA` fields tell the agent
-which candidate dataset covers the question, which keys connect it, and where
-it lives. On-Prem objects named there are allowlisted in `onprem.yaml` so
-the catalog can be followed. CDM objects it names live on ATP (`NAPPERP`).
-A catalog row still cannot invent an object that is not declared or
-discoverable.
-
-CDM and CMAT business data always routes to Oracle ATP. Reading the routing
-catalog itself from On-Prem does not change that boundary. Mixed reconciliation
-uses On-Prem for the EIM side and ATP for the CDM side.
+The On-Prem profile exposes exactly seven declared EIM tables. The agent uses
+`search_data_dictionary` and `get_table_metadata` to choose among those tables;
+metadata discovery cannot widen the allowlist.
 
 Shelf and device configuration is `EIM.EIM_CONFIG_DETAILS`, keyed by
 `PRIMARY_SN`. `SOURCE` values `BKC` / `BKC_AIQ` are ASUP current config;
