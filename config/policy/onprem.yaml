@@ -145,7 +145,13 @@ schemas:
         description: >-
           Latest party-role assignment per system and role, keyed by
           SYSTEM_SERIAL_NUMBER and ROLE_ID. Join ROLE_ID to EIM_PR_ROLES for
-          the role name. Prefer this published view over EIM_PR_IB_LATEST.
+          the role label only (End Customer = 1, Installed At = 10, Serial
+          Number Owner = 19). This view holds CMAT_CUSTOMER_ID (company CMAT
+          ID) and CMAT_SITE_ID (CMAT site), not the company name. To name the
+          company, NAGP, DP, and address, look up ATP
+          NAPPERP.NAPP_CDM_TO_ATP_SYNC with CMAT_ID = CMAT_CUSTOMER_ID and
+          CMAT_ADDRESS_ID = CMAT_SITE_ID. Prefer this published view over
+          EIM_PR_IB_LATEST.
         business_domain: Party Role
         sensitivity: INTERNAL
         large_table: true

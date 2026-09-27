@@ -182,7 +182,8 @@ the published view over the older base table when both exist.
 | Serial master / lifecycle | `EIM.EIM_IB_CONFIG_LATEST_PUB` | `SERIAL_NUMBER` |
 | Sales-order history | `EIM.EIM_PR_SN_SO_REF_PUB` | `SYSTEM_SERIAL_NUMBER`, `SALES_ORDER_NUMBER` |
 | Service-contract lines | `EIM.EIM_CONTRACT_LINES_PUB_VW` | `SYSTEM_SERIAL_NUMBER` |
-| Latest party roles | `EIM.EIM_IB_LATEST_PUB` joined to `EIM.EIM_PR_ROLES` | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID` |
+| Latest party roles | `EIM.EIM_IB_LATEST_PUB` joined to `EIM.EIM_PR_ROLES` for the role label only | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID` |
+| Company name, NAGP, DP, and address for a party role | On-Prem `EIM_IB_LATEST_PUB` (`CMAT_CUSTOMER_ID`, `CMAT_SITE_ID`), then ATP `NAPPERP.NAPP_CDM_TO_ATP_SYNC` | `CMAT_ID` = `CMAT_CUSTOMER_ID`; `CMAT_ADDRESS_ID` = `CMAT_SITE_ID` |
 | Shelf / drive configuration | `EIM.EIM_CONFIG_DETAIL_VW` | `PRIMARY_SN` |
 | Opportunities | `EIM.EIM_OPPTY_DETAILS_VW`, or `EIM_OPPTY_DETAILS` joined to `EIM_OPPTY_SN_DETAILS` on `OPPTY_ID` | `OPPTY_ID` or `SYSTEM_SERIAL_NUMBER` |
 | Protocols / licenses | `EIM.EIM_PROTOCOL_DETAILS_VW` | `SYSTEM_SERIAL_NUMBER` |
@@ -203,6 +204,22 @@ imply a shared set of values.
 
 Omit `PRIMARY_CONTACT_EMAIL` and `PRIMARY_CONTACT_PHONE` unless the user
 explicitly asks for them.
+
+The company in a party role is not stored on `EIM_IB_LATEST_PUB`. For "who is
+the End Customer" (or Installed At, Serial Number Owner, or any other role)
+on a serial number:
+
+1. On On-Prem, filter `EIM.EIM_IB_LATEST_PUB` by `SYSTEM_SERIAL_NUMBER` and
+   `ROLE_ID`. End Customer = 1, Installed At = 10, Serial Number Owner = 19.
+   Join `EIM.EIM_PR_ROLES` only for the role label. Read `CMAT_CUSTOMER_ID`
+   (company CMAT ID) and `CMAT_SITE_ID` (CMAT site).
+2. On ATP, query `NAPPERP.NAPP_CDM_TO_ATP_SYNC` with `CMAT_ID` equal to that
+   `CMAT_CUSTOMER_ID`. When the site is present, also filter
+   `CMAT_ADDRESS_ID` to `CMAT_SITE_ID`. Return `COMPANY_NAME`, `NAGP_ID`,
+   `NAGP_NAME`, `DP_ID`, `DP_NAME`, and `ADDRESS1`, `ADDRESS2`, `ADDRESS3`.
+3. Run the two lookups separately. If the site filter returns nothing, retry
+   with `CMAT_ID` only and say the site did not match. A company-only lookup
+   can return more than one address because this table is one row per address.
 
 ## Choosing the identifier column
 
