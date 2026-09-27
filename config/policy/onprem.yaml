@@ -7,8 +7,10 @@
 #
 # This database is in strict allowlist mode: only the objects below are
 # reachable. Adding an object here is a governance decision, so it goes through
-# review rather than being discovered automatically. This deployment is scoped
-# to the seven EIM tables approved by the database owner.
+# review rather than being discovered automatically. This file allowlists the
+# On-Prem objects named in EIM_APPS.EIM_AI_LOOKUP_DETAILS, the routing catalog
+# itself, and every EIM table or view named by the EIM Install Base knowledge
+# skill. CDM objects in the lookup catalog live on ATP, not here.
 database: ONPREM
 display_name: On-Prem Oracle DB
 description: >-
@@ -92,7 +94,133 @@ schemas:
 
       - name: EIM_PR_ROLES
         type: TABLE
-        description: Role assignments used by EIM processing.
+        description: >-
+          Party-role reference. Join ROLE_ID from EIM_IB_LATEST_PUB. Known
+          roles include End Customer = 1, Installed At = 10, Serial Number
+          Owner = 19.
+        business_domain: Reference Data
+        sensitivity: INTERNAL
+        large_table: false
+        require_filter: false
+
+      - name: EIM_IB_CONFIG_LATEST_PUB
+        type: VIEW
+        description: >-
+          Authoritative serial-number master for lifecycle and install-base
+          attributes, keyed by SERIAL_NUMBER. Prefer this over EIM_PR_SYSTEM
+          for current serial attributes. PRIMARY_CONTACT_EMAIL and
+          PRIMARY_CONTACT_PHONE are confidential; omit them unless asked.
+        business_domain: Install Base
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_PR_SN_SO_REF_PUB
+        type: VIEW
+        description: >-
+          Published serial-number to sales-order history. Business key is
+          SYSTEM_SERIAL_NUMBER plus SALES_ORDER_NUMBER. Use SRC_TRANS_TYPE
+          POS for point of sale and NON-POS for renewal. Do not apply the
+          EIM_PR_SN_SO_REF ACTIVE filter here unless metadata shows that code.
+        business_domain: Sales Order
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_CONTRACT_LINES_PUB_VW
+        type: VIEW
+        description: >-
+          Service-contract line details for a system, filtered by
+          SYSTEM_SERIAL_NUMBER. This is the authoritative contract source:
+          contract number, line, start and end dates, item status, and
+          support service type. Prefer it over the contract summary columns
+          on EIM_PR_SYSTEM.
+        business_domain: Service Contract
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_IB_LATEST_PUB
+        type: VIEW
+        description: >-
+          Latest party-role assignment per system and role, keyed by
+          SYSTEM_SERIAL_NUMBER and ROLE_ID. Join ROLE_ID to EIM_PR_ROLES for
+          the role name. Prefer this published view over EIM_PR_IB_LATEST.
+        business_domain: Party Role
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_CONFIG_DETAIL_VW
+        type: VIEW
+        description: >-
+          Controller, shelf, and drive configuration, filtered by PRIMARY_SN.
+          Prefer this view over EIM_CONFIG_DETAILS for hardware configuration.
+        business_domain: Hardware Configuration
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_OPPTY_DETAILS
+        type: TABLE
+        description: Opportunity header, keyed by OPPTY_ID.
+        business_domain: Opportunity
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_OPPTY_SN_DETAILS
+        type: TABLE
+        description: >-
+          Opportunity to serial association. Join to EIM_OPPTY_DETAILS on
+          OPPTY_ID. Expected key is OPPTY_ID plus SERIAL_NUMBER.
+        business_domain: Opportunity
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_OPPTY_DETAILS_VW
+        type: VIEW
+        description: >-
+          Approved opportunity view. Prefer this over EIM_OPPTY_DETAILS when
+          it contains every attribute the question needs.
+        business_domain: Opportunity
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_PROTOCOL_DETAILS_VW
+        type: VIEW
+        description: >-
+          Protocol, software, and license details, filtered by
+          SYSTEM_SERIAL_NUMBER.
+        business_domain: Protocol and Software
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: true
+
+      - name: EIM_PRODUCT_DETAIL_VW
+        type: VIEW
+        description: >-
+          Product attributes, keyed by PART_NUMBER. Prefer this view over
+          EIM_DRM_PRODUCT_DETAILS when both can answer.
+        business_domain: Product
+        sensitivity: INTERNAL
+        large_table: true
+        require_filter: false
+
+  - name: EIM_APPS
+    description: EIM application metadata used to route AI questions.
+    business_domain: Reference Data
+    objects:
+      - name: EIM_AI_LOOKUP_DETAILS
+        type: TABLE
+        description: >-
+          Governed dataset-routing catalog for EIM, Install Base, CDM and CMAT
+          questions. REFERENCE_TABLE identifies the candidate dataset, COMMENTS
+          describes its purpose, KEY_COLUMNS gives the filter/join keys, and
+          DB_TYPE plus DB_SCHEMA identify where it lives. On-Prem objects it
+          names are allowlisted in this file; CDM objects it names live on ATP.
         business_domain: Reference Data
         sensitivity: INTERNAL
         large_table: false

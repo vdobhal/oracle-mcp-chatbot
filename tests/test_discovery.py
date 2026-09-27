@@ -343,13 +343,33 @@ def test_deployed_onprem_exposes_exactly_the_approved_tables(
     assert policy.allow_all_schemas is False
     assert sorted(o.fqn for o in policy.iter_objects()) == [
         "EIM.EIM_CONFIG_DETAILS",
+        "EIM.EIM_CONFIG_DETAIL_VW",
+        "EIM.EIM_CONTRACT_LINES_PUB_VW",
         "EIM.EIM_DRM_PRODUCT_DETAILS",
+        "EIM.EIM_IB_CONFIG_LATEST_PUB",
+        "EIM.EIM_IB_LATEST_PUB",
+        "EIM.EIM_OPPTY_DETAILS",
+        "EIM.EIM_OPPTY_DETAILS_VW",
+        "EIM.EIM_OPPTY_SN_DETAILS",
+        "EIM.EIM_PRODUCT_DETAIL_VW",
+        "EIM.EIM_PROTOCOL_DETAILS_VW",
         "EIM.EIM_PR_HEADSWAP",
         "EIM.EIM_PR_IB_LATEST",
         "EIM.EIM_PR_ROLES",
         "EIM.EIM_PR_SN_SO_REF",
+        "EIM.EIM_PR_SN_SO_REF_PUB",
         "EIM.EIM_PR_SYSTEM",
+        "EIM_APPS.EIM_AI_LOOKUP_DETAILS",
     ]
+
+    contract = policy.resolve_object("EIM", "EIM_CONTRACT_LINES_PUB_VW")
+    assert contract is not None
+    assert contract.object_type == "VIEW"
+    assert contract.require_filter is True
+
+    lookup = policy.resolve_object("EIM_APPS", "EIM_AI_LOOKUP_DETAILS")
+    assert lookup is not None
+    assert "KEY_COLUMNS" in lookup.description
 
     config = policy.resolve_object("EIM", "EIM_CONFIG_DETAILS")
     assert config is not None
@@ -385,7 +405,7 @@ def test_headswap_warns_against_the_status_filter_that_belongs_to_sn_so_ref(
     assert "ACTIVE" in so_ref
 
 
-def test_deployed_roles_are_scoped_to_eim_only(
+def test_deployed_roles_can_read_eim_and_the_routing_catalog(
     deployed_policy_dir: Path,
 ):
     clear_policy_cache()
@@ -394,7 +414,7 @@ def test_deployed_roles_are_scoped_to_eim_only(
     for role_name in ("business_user", "analyst", "architect", "support", "admin"):
         role = store.role(role_name)
         assert role.can_see_schema("ONPREM", "EIM") is True
-        assert role.can_see_schema("ONPREM", "EIM_APPS") is False
+        assert role.can_see_schema("ONPREM", "EIM_APPS") is True
         assert role.can_see_schema("ONPREM", "OTHER_APP") is False
 
 
@@ -411,6 +431,10 @@ def test_deployed_atp_is_scoped_to_the_erp_schemas(deployed_policy_dir: Path):
     # Everything else NAPP_READONLY can read must stay out of reach.
     for other in ("APEX_240200", "RMAN$CATALOG", "GGADMIN", "SH", "ADMIN", "NAPPLIC"):
         assert policy.is_discoverable(other) is False, other
+
+    declared = {obj.fqn for obj in policy.iter_objects()}
+    assert "NAPPERP.NAPP_CDM_TO_ATP_SYNC" in declared
+    assert "NAPPERP.NAPP_GTM_CDM_INBOUND_MSGS" in declared
 
 
 # ---- object exclusions and domain tagging ---------------------------------

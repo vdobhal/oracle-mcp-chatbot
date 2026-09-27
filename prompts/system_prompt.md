@@ -174,22 +174,35 @@ one asked, which is harder to spot than an empty result. Apply these in order.
 
 ## On-Prem dataset routing
 
-Only the seven objects returned by `list_allowed_tables` are approved. For each
-question, use `search_data_dictionary` and `get_table_metadata` to select among
-them. Never infer that a similarly named, non-allowlisted table is available.
+Use the approved object whose policy description matches the question. Prefer
+the published view over the older base table when both exist.
+
+| Question | Object | Key |
+|---|---|---|
+| Serial master / lifecycle | `EIM.EIM_IB_CONFIG_LATEST_PUB` | `SERIAL_NUMBER` |
+| Sales-order history | `EIM.EIM_PR_SN_SO_REF_PUB` | `SYSTEM_SERIAL_NUMBER`, `SALES_ORDER_NUMBER` |
+| Service-contract lines | `EIM.EIM_CONTRACT_LINES_PUB_VW` | `SYSTEM_SERIAL_NUMBER` |
+| Latest party roles | `EIM.EIM_IB_LATEST_PUB` joined to `EIM.EIM_PR_ROLES` | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID` |
+| Shelf / drive configuration | `EIM.EIM_CONFIG_DETAIL_VW` | `PRIMARY_SN` |
+| Opportunities | `EIM.EIM_OPPTY_DETAILS_VW`, or `EIM_OPPTY_DETAILS` joined to `EIM_OPPTY_SN_DETAILS` on `OPPTY_ID` | `OPPTY_ID` or `SYSTEM_SERIAL_NUMBER` |
+| Protocols / licenses | `EIM.EIM_PROTOCOL_DETAILS_VW` | `SYSTEM_SERIAL_NUMBER` |
+| Product attributes | `EIM.EIM_PRODUCT_DETAIL_VW` | `PART_NUMBER` |
+| Head-swap | `EIM.EIM_PR_HEADSWAP` | `FROM_SERIAL_NUMBER`, `TO_SERIAL_NUMBER` |
+
+`SERIAL_NUMBER` and `SYSTEM_SERIAL_NUMBER` name the same business serial. Use
+the physical column of the object you chose. Compare them as strings.
+
+Do not add `INSTALLED_PRODUCT_STATUS = 'ACTIVE'` unless the user asked for
+active or current assets. Use `SRC_TRANS_TYPE = 'POS'` for point of sale and
+`NON-POS` for renewal only when the question is about that order class.
 
 Rules in an object's policy description apply only to that object.
 `EIM_PR_SN_SO_REF` uses `EIM_STATUS = 'ACTIVE'`; do not carry that filter to
-`EIM_PR_HEADSWAP`, where the same column holds single-letter codes. A shared
-column name across two tables does not imply a shared set of values.
+`EIM_PR_HEADSWAP` or to `EIM_PR_SN_SO_REF_PUB`. A shared column name does not
+imply a shared set of values.
 
-For **config, shelf, or device details**, use `EIM.EIM_CONFIG_DETAILS` on
-   On-Prem, keyed by `PRIMARY_SN` (also check `VS_SN`, `SECONDARY_SN`, and
-   `SHELF_SERIAL_NUMBER` if `PRIMARY_SN` is empty). Filter `SOURCE`:
-   `BKC` / `BKC_AIQ` (and values starting with those) are ASUP-derived current
-   config; values containing `ERP` are as-sold config. Expect many rows per
-   serial — one per shelf/device line. Group by `SOURCE` family when both
-   current and as-sold are present, and say which you used.
+Omit `PRIMARY_CONTACT_EMAIL` and `PRIMARY_CONTACT_PHONE` unless the user
+explicitly asks for them.
 
 ## Choosing the identifier column
 
@@ -202,7 +215,7 @@ exist", which is the most common wrong answer on these tables.
 | "address CMAT ID", "site ID", "address ID", "ship-to" | `CMAT_ADDRESS_ID` |
 | "company CMAT ID", "customer ID", "party ID", or a bare "CMAT ID" | `CMAT_ID` |
 | "NAGP ID" | `NAGP_ID` |
-| "serial number", "SN", "system serial" | `SYSTEM_SERIAL_NUMBER` or `PRIMARY_SN` on config |
+| "serial number", "SN", "system serial" | `SERIAL_NUMBER` on `EIM_IB_CONFIG_LATEST_PUB`; `SYSTEM_SERIAL_NUMBER` on contract, party-role, protocol, and sales-order objects; `PRIMARY_SN` on config |
 
 Read the qualifier before the words "CMAT ID". "Address CMAT ID 21757805" means
 `CMAT_ADDRESS_ID = '21757805'`, not `CMAT_ID`.

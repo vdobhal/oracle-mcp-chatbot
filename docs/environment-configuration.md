@@ -68,8 +68,8 @@ server log line above it carries the Oracle error code.
 ### 1. Verify the `EIM_APPSRO` database grants
 
 The supplied account is named as a read-only account, but its grants still need
-to be verified. It should have only `CREATE SESSION` and `SELECT` on the seven
-approved objects. Confirm the boundary directly:
+to be verified. It should have only `CREATE SESSION` and `SELECT` on the
+allowlisted objects. Confirm the boundary directly:
 
 ```sql
 -- as the chatbot account; must fail with ORA-01031
@@ -153,9 +153,9 @@ secret manager rather than a file on disk. Real environment variables override
 
 This is worth understanding because the security properties are not the same.
 
-**On-Prem is strictly allowlisted.** `config/policy/onprem.yaml` names exactly
-the seven approved EIM tables. Nothing else in the database is reachable,
-whatever the grants say:
+**On-Prem is strictly allowlisted.** `config/policy/onprem.yaml` names the
+lookup-catalog objects, the routing catalog, and the EIM Install Base skill
+tables and views. Nothing else is reachable, whatever the grants say:
 
 | Object | Filter required |
 |---|---|
@@ -166,12 +166,23 @@ whatever the grants say:
 | `EIM.EIM_PR_ROLES` | no |
 | `EIM.EIM_CONFIG_DETAILS` | yes |
 | `EIM.EIM_PR_HEADSWAP` | yes |
+| `EIM.EIM_IB_CONFIG_LATEST_PUB` | yes |
+| `EIM.EIM_PR_SN_SO_REF_PUB` | yes |
+| `EIM.EIM_CONTRACT_LINES_PUB_VW` | yes |
+| `EIM.EIM_IB_LATEST_PUB` | yes |
+| `EIM.EIM_CONFIG_DETAIL_VW` | yes |
+| `EIM.EIM_OPPTY_DETAILS` | yes |
+| `EIM.EIM_OPPTY_SN_DETAILS` | yes |
+| `EIM.EIM_OPPTY_DETAILS_VW` | yes |
+| `EIM.EIM_PROTOCOL_DETAILS_VW` | yes |
+| `EIM.EIM_PRODUCT_DETAIL_VW` | no |
+| `EIM_APPS.EIM_AI_LOOKUP_DETAILS` | no |
 
-**ATP is in wildcard mode.** `allow_all_schemas: true` means every schema the
-`NAPP_READONLY` account can read is reachable, discovered live from the data
-dictionary. This is what "allow all schema read-only access" asks for, and it is
-a real reduction in defence depth: the object allowlist was one of five layers,
-and on ATP it is now the database grant instead.
+**ATP is scoped discovery.** `discovered_schemas` is `NAPPERP`, `NAPPERPADM`,
+and `NAPPERPDS`. The routing catalog's CDM tables
+`NAPPERP.NAPP_CDM_TO_ATP_SYNC` and `NAPPERP.NAPP_GTM_CDM_INBOUND_MSGS` are in
+that scope (and declared with descriptions). Dump/backup/temp names are
+excluded. This is narrower than `allow_all_schemas: true`.
 
 The other four layers are unchanged on both databases — role clearance, the SQL
 guardrails, row caps and timeouts, and output masking. What ATP loses is the
