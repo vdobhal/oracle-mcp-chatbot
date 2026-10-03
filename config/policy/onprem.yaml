@@ -32,7 +32,14 @@ schemas:
     objects:
       - name: EIM_PR_SYSTEM
         type: TABLE
-        description: Registered systems and their current attributes.
+        description: >-
+          Fast serial-attribute table, keyed by SYSTEM_SERIAL_NUMBER. Use this
+          for a serial's INSTALLED_PRODUCT_STATUS, HARDWARE_SERV_END_DATE,
+          SOFTWARE_SERV_END_DT, SYSTEM_MODEL, SYSTEM_OS_VERSION, PRODUCT_SERIES,
+          PART_NUMBER, IB_LIFECYCLE_STATUS, SERVICE_CONTRACT_STATUS, and
+          SYSTEM_STATUS. Prefer it over EIM_IB_CONFIG_LATEST_PUB for these
+          columns. If a query on that view is slow or times out, rerun the
+          same attributes here.
         business_domain: Install Base
         sensitivity: INTERNAL
         large_table: true
@@ -86,7 +93,13 @@ schemas:
 
       - name: EIM_PR_IB_LATEST
         type: TABLE
-        description: Latest install-base snapshot per system.
+        description: >-
+          Fast party-role table, one row per SYSTEM_SERIAL_NUMBER and ROLE_ID.
+          Use this, not EIM_IB_LATEST_PUB, when comparing many serials. Join
+          it twice for End Customer (ROLE_ID 1) and Installed At (ROLE_ID 10)
+          on SYSTEM_SERIAL_NUMBER, and compare CMAT_SITE_ID. Drive the join
+          from EIM_PR_SYSTEM when the question also filters serial attributes
+          such as INSTALLED_PRODUCT_STATUS or HARDWARE_SERV_END_DATE.
         business_domain: Install Base
         sensitivity: INTERNAL
         large_table: true
@@ -106,10 +119,14 @@ schemas:
       - name: EIM_IB_CONFIG_LATEST_PUB
         type: VIEW
         description: >-
-          Authoritative serial-number master for lifecycle and install-base
-          attributes, keyed by SERIAL_NUMBER. Prefer this over EIM_PR_SYSTEM
-          for current serial attributes. PRIMARY_CONTACT_EMAIL and
-          PRIMARY_CONTACT_PHONE are confidential; omit them unless asked.
+          Published serial view, keyed by SERIAL_NUMBER. It is slow for a
+          single-serial attribute check. Use EIM_PR_SYSTEM instead for
+          INSTALLED_PRODUCT_STATUS, HARDWARE_SERV_END_DATE, SYSTEM_MODEL, and
+          the other serial attributes that table holds. Use this view only
+          for attributes that are not on EIM_PR_SYSTEM, such as
+          RENEWAL_ELIGIBILITY, CLUSTER_ID, PRODUCT_LINE, PRODUCT_TYPE, and
+          PRODUCT_CATEGORY. PRIMARY_CONTACT_EMAIL and PRIMARY_CONTACT_PHONE
+          are confidential; omit them unless asked.
         business_domain: Install Base
         sensitivity: INTERNAL
         large_table: true
@@ -150,8 +167,9 @@ schemas:
           ID) and CMAT_SITE_ID (CMAT site), not the company name. To name the
           company, NAGP, DP, and address, look up ATP
           NAPPERP.NAPP_CDM_TO_ATP_SYNC with CMAT_ID = CMAT_CUSTOMER_ID and
-          CMAT_ADDRESS_ID = CMAT_SITE_ID. Prefer this published view over
-          EIM_PR_IB_LATEST.
+          CMAT_ADDRESS_ID = CMAT_SITE_ID. For one serial this view is fine.
+          For a population comparison, use EIM_PR_IB_LATEST; this view is too
+          slow.
         business_domain: Party Role
         sensitivity: INTERNAL
         large_table: true

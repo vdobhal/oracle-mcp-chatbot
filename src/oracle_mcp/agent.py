@@ -114,7 +114,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "validate_sql",
-            "description": "Validate a SELECT against read-only guardrails. Returns rewritten_safe_sql, the only text execute_readonly_sql will accept.",
+            "description": (
+                "Validate a selective, read-only SELECT. Filter on the physical "
+                "business key, select only required columns, avoid unnecessary joins "
+                "and functions on filtered keys, and aggregate in Oracle. Optimizer "
+                "hints are removed. Returns rewritten_safe_sql, the only text "
+                "execute_readonly_sql will accept."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -129,7 +135,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "execute_readonly_sql",
-            "description": "Execute a previously validated SELECT and return masked, capped rows. Pass exactly rewritten_safe_sql from validate_sql.",
+            "description": (
+                "Execute a previously validated SELECT and return masked, capped rows. "
+                "Pass exactly rewritten_safe_sql from validate_sql. If it times out, "
+                "do not retry unchanged: narrow the filter, remove unnecessary joins "
+                "or columns, use an approved fast-path object, or aggregate in Oracle."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -175,14 +175,18 @@ one asked, which is harder to spot than an empty result. Apply these in order.
 ## On-Prem dataset routing
 
 Use the approved object whose policy description matches the question. Prefer
-the published view over the older base table when both exist.
+the published view over the older base table when both exist, except for a
+serial-number attribute check. Those columns are on `EIM.EIM_PR_SYSTEM`, and
+`EIM_IB_CONFIG_LATEST_PUB` is slow for this lookup.
 
 | Question | Object | Key |
 |---|---|---|
-| Serial master / lifecycle | `EIM.EIM_IB_CONFIG_LATEST_PUB` | `SERIAL_NUMBER` |
+| Serial attributes: installed product status, hardware or software service end date, system model, OS, product series, part number, lifecycle, contract status | `EIM.EIM_PR_SYSTEM` | `SYSTEM_SERIAL_NUMBER` |
+| Serial attributes not on `EIM_PR_SYSTEM` (renewal eligibility, cluster, product line, type, category) | `EIM.EIM_IB_CONFIG_LATEST_PUB` | `SERIAL_NUMBER` |
 | Sales-order history | `EIM.EIM_PR_SN_SO_REF_PUB` | `SYSTEM_SERIAL_NUMBER`, `SALES_ORDER_NUMBER` |
 | Service-contract lines | `EIM.EIM_CONTRACT_LINES_PUB_VW` | `SYSTEM_SERIAL_NUMBER` |
-| Latest party roles | `EIM.EIM_IB_LATEST_PUB` joined to `EIM.EIM_PR_ROLES` for the role label only | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID` |
+| Latest party roles for one serial | `EIM.EIM_IB_LATEST_PUB` joined to `EIM.EIM_PR_ROLES` for the role label only | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID` |
+| Party-role site comparison across many serials | `EIM.EIM_PR_IB_LATEST`, joined twice on `SYSTEM_SERIAL_NUMBER` for role 1 and role 10. Drive from `EIM.EIM_PR_SYSTEM` when serial attributes are filtered | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID`, `CMAT_SITE_ID` |
 | Company name, NAGP, DP, and address for a party role | On-Prem `EIM_IB_LATEST_PUB` (`CMAT_CUSTOMER_ID`, `CMAT_SITE_ID`), then ATP `NAPPERP.NAPP_CDM_TO_ATP_SYNC` | `CMAT_ID` = `CMAT_CUSTOMER_ID`; `CMAT_ADDRESS_ID` = `CMAT_SITE_ID` |
 | Shelf / drive configuration | `EIM.EIM_CONFIG_DETAIL_VW` | `PRIMARY_SN` |
 | Opportunities | `EIM.EIM_OPPTY_DETAILS_VW`, or `EIM_OPPTY_DETAILS` joined to `EIM_OPPTY_SN_DETAILS` on `OPPTY_ID` | `OPPTY_ID` or `SYSTEM_SERIAL_NUMBER` |
@@ -191,7 +195,45 @@ the published view over the older base table when both exist.
 | Head-swap | `EIM.EIM_PR_HEADSWAP` | `FROM_SERIAL_NUMBER`, `TO_SERIAL_NUMBER` |
 
 `SERIAL_NUMBER` and `SYSTEM_SERIAL_NUMBER` name the same business serial. Use
-the physical column of the object you chose. Compare them as strings.
+the physical column of the object you chose. On `EIM_PR_SYSTEM` that column is
+`SYSTEM_SERIAL_NUMBER`. Compare them as strings.
+
+If a query on `EIM_IB_CONFIG_LATEST_PUB` is slow or times out, stop and rerun
+the same attributes on `EIM.EIM_PR_SYSTEM` filtered by `SYSTEM_SERIAL_NUMBER`.
+Do not start a serial attribute check on the view when the column is on
+`EIM_PR_SYSTEM`.
+
+## Query performance
+
+Return the answer with the smallest safe query that satisfies the request.
+Oracle chooses the final execution plan; do not add optimizer hints because the
+SQL guard removes them. Improve the plan through query shape:
+
+1. Filter first on the most selective approved business key. For one serial,
+   put the physical serial column in the `WHERE` clause before considering any
+   join. For a date-bounded question, apply the date range in the same query.
+2. Select only the columns needed for the answer. Never use `SELECT *`.
+3. Use the narrowest approved object. Prefer a fast table over a complex view
+   when policy identifies an equivalent fast path. For serial attributes, use
+   `EIM.EIM_PR_SYSTEM`.
+4. Do not join merely to obtain a column already present on the first object.
+   Join only on the governed relationship and only after filtering each side.
+5. Prevent row multiplication. When the question needs existence rather than
+   child-row details, use `EXISTS` instead of joining a one-to-many table. Use
+   `SELECT DISTINCT` only when the requested business key can legitimately
+   repeat; do not use it to hide an incorrect join.
+6. Push `COUNT`, `SUM`, `MIN`, `MAX`, grouping, and conditional aggregation into
+   Oracle. Do not fetch detail rows and aggregate them in the model.
+7. Avoid wrapping filtered key and date columns in `UPPER`, `TO_CHAR`, `TRIM`,
+   arithmetic, or other functions. Convert the supplied value to the physical
+   column's type instead, so an index can be used.
+8. For cross-database work, run one selective query per database and reconcile
+   in `compare_onprem_and_atp_data`. Never create a cartesian or cross-database
+   SQL join.
+9. If a query times out, do not repeat it unchanged. Remove unnecessary joins
+   and columns, add or narrow a selective predicate, use the approved fast-path
+   object, or use a database aggregate. Report the fallback only if it changes
+   the meaning or completeness of the answer.
 
 Do not add `INSTALLED_PRODUCT_STATUS = 'ACTIVE'` unless the user asked for
 active or current assets. Use `SRC_TRANS_TYPE = 'POS'` for point of sale and
@@ -232,7 +274,7 @@ exist", which is the most common wrong answer on these tables.
 | "address CMAT ID", "site ID", "address ID", "ship-to" | `CMAT_ADDRESS_ID` |
 | "company CMAT ID", "customer ID", "party ID", or a bare "CMAT ID" | `CMAT_ID` |
 | "NAGP ID" | `NAGP_ID` |
-| "serial number", "SN", "system serial" | `SERIAL_NUMBER` on `EIM_IB_CONFIG_LATEST_PUB`; `SYSTEM_SERIAL_NUMBER` on contract, party-role, protocol, and sales-order objects; `PRIMARY_SN` on config |
+| "serial number", "SN", "system serial" | `SYSTEM_SERIAL_NUMBER` on `EIM_PR_SYSTEM`, contract, party-role, protocol, and sales-order objects; `SERIAL_NUMBER` on `EIM_IB_CONFIG_LATEST_PUB`; `PRIMARY_SN` on config |
 
 Read the qualifier before the words "CMAT ID". "Address CMAT ID 21757805" means
 `CMAT_ADDRESS_ID = '21757805'`, not `CMAT_ID`.
