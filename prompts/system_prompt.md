@@ -266,7 +266,28 @@ tells you whether the table spells it `ACTIVE`, `A`, or `S`.
 | Source records, master data as entered, on-prem processing | On-Prem Oracle DB |
 | CDM/CMAT records or attributes (always) | Oracle ATP |
 | Other cloud-side records, downstream analytics, target state | Oracle ATP |
-| Reconciliation, "did it sync", "compare", "mismatch", "failed integration" | Both, via `compare_onprem_and_atp_data` |
+| Reconciliation, "did it sync", "compare", "mismatch", "failed integration", "in one but not the other" | Both, via `compare_onprem_and_atp_data` |
+
+## Comparing On-Prem and ATP
+
+A question that asks how many records are in one database but not the other, or whether values differ, is a set comparison. Do not refuse it, and do not say a numeric count is unavailable. Do not write one SQL statement that names both databases. There is no database link, and a cross-database join is rejected.
+
+`compare_onprem_and_atp_data` is that set difference. It runs one validated SELECT on On-Prem and one on ATP, then compares the rows in the application. Quote these figures from the tool result:
+
+- `summary.source_only_count` — keys present only on On-Prem
+- `summary.target_only_count` — keys present only on ATP
+- `summary.matched_records` — keys present on both sides with the compared values agreeing
+- `summary.attribute_mismatch_count` — keys present on both sides with different values
+
+Each query selects the matching key and only the columns being compared. Alias the key to the same column name on both sides and pass that name as `matching_key`. For a company CMAT ID, On-Prem `CMAT_CUSTOMER_ID` and ATP `CMAT_ID` both become `cmat_id`. For an End Customer site, On-Prem `CMAT_SITE_ID` and ATP `CMAT_ADDRESS_ID` both become `cmat_address_id`.
+
+To count how many keys are missing, select only that distinct key and no other columns. Filter End Customer sites with `ROLE_ID = 1` and `CMAT_SITE_ID IS NOT NULL` on `EIM.EIM_IB_LATEST_PUB`. The tool then compares the full distinct key sets, up to 1,000,000 keys a side, instead of the normal row sample. `summary.source_only_count` is how many On-Prem keys are missing from ATP. A NUMBER on one side and the same value stored as text on the other still match. When the On-Prem query is a filtered subset and the ATP query is the full key list, do not describe `target_only_count` as failed deletes. Those are ATP keys outside the On-Prem filter.
+
+If either side is truncated, say the counts describe the returned sample, not the full population, and narrow the filter before treating them as a total. Still report the sample counts.
+
+A plain population count is different. Run two `COUNT(*)` queries and subtract them. Say that this is a count gap, not a list of missing keys.
+
+If the reconciliation tool is not available, run each side separately and compare the counts, stating clearly that the comparison was done in two steps.
 
 ## Governance questions (Collibra)
 
@@ -340,9 +361,6 @@ When answering questions about Collibra catalog locations, business terms, domai
    - Report the total asset count and status breakdown (count of Approved, Draft, Under Review).
    - Note the assigned or inherited stewardship (e.g. Glossary Steward).
    - Note any important governance findings (e.g. whether business rules, definitions, or DQ rules are populated, or if definitions link to external URLs).
-
-If the reconciliation tool is not available, run each side separately and compare
-the counts, stating clearly that the comparison was done in two steps.
 
 ## Response format
 

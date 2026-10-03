@@ -7,6 +7,7 @@ import pytest
 from oracle_mcp.agent import (
     ChatAgent,
     asks_instead_of_discovering,
+    refuses_cross_database_compare,
     compact_tool_result,
     tools_for,
 )
@@ -107,6 +108,51 @@ ANSWERING_REPLIES = [
 @pytest.mark.parametrize("text", ANSWERING_REPLIES)
 def test_real_answers_are_not_mistaken_for_punting(text: str):
     assert asks_instead_of_discovering(text) is False
+
+
+REFUSAL = (
+    "From this interface, I cannot give you the numeric count, because I cannot "
+    "perform the set difference across those two databases in a single validated "
+    "query, and there is no approved reconciliation tool for this specific use "
+    "case beyond compare_onprem_and_atp_data (which expects one query per side, "
+    "not the cross-join pattern above)."
+)
+
+
+def test_cross_database_refusal_is_recognised():
+    assert refuses_cross_database_compare(REFUSAL) is True
+    assert refuses_cross_database_compare(
+        "On-Prem has 2 keys and ATP has 2. One key is only on ATP."
+    ) is False
+
+
+def test_refusing_a_comparison_is_sent_back_to_the_compare_tool(service):
+    llm = ScriptedLlm(
+        [
+            {"role": "assistant", "content": REFUSAL},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "cmp",
+                        "function": {
+                            "name": "compare_onprem_and_atp_data",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "2 keys are only on On-Prem and 1 is only on ATP.",
+            },
+        ]
+    )
+    agent = ChatAgent(service, llm)
+    result = agent.run("how many company CMAT IDs are on On-Prem but not in CDM?")
+    assert "only on ATP" in result["answer"]
+    assert result["tools"][0]["name"] == "compare_onprem_and_atp_data"
 
 
 def test_answering_without_a_tool_call_is_sent_back_for_discovery(service):

@@ -147,13 +147,16 @@ class OracleConnection:
             return self._pool
 
     @contextmanager
-    def read_only_cursor(self) -> Iterator[oracledb.Cursor]:
+    def read_only_cursor(
+        self, timeout_seconds: int | None = None
+    ) -> Iterator[oracledb.Cursor]:
         """Acquire a connection pinned to a read-only transaction with a call timeout."""
         pool = self._pool_or_create()
         connection = None
         try:
             connection = pool.acquire()
-            connection.call_timeout = self.query_timeout_seconds * 1000
+            timeout = timeout_seconds if timeout_seconds is not None else self.query_timeout_seconds
+            connection.call_timeout = timeout * 1000
             cursor = connection.cursor()
             cursor.arraysize = 200
             cursor.prefetchrows = 200
@@ -182,6 +185,7 @@ class OracleConnection:
         binds: dict[str, Any] | None = None,
         *,
         max_rows: int,
+        timeout_seconds: int | None = None,
     ) -> tuple[list[str], list[dict[str, Any]], bool, float]:
         """Run a validated SELECT.
 
@@ -189,8 +193,11 @@ class OracleConnection:
         than silently returning a short answer to a question about totals.
         """
         started = time.perf_counter()
-        with self.read_only_cursor() as cursor:
+        with self.read_only_cursor(timeout_seconds) as cursor:
             try:
+                if max_rows > 1000:
+                    cursor.arraysize = 5000
+                    cursor.prefetchrows = 5000
                 cursor.execute(sql, binds or {})
                 columns = [d[0] for d in (cursor.description or [])]
                 raw: Sequence[tuple[Any, ...]] = cursor.fetchmany(max_rows + 1)

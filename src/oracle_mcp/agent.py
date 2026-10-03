@@ -162,7 +162,19 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "compare_onprem_and_atp_data",
-            "description": "Reconcile a business entity between On-Prem and ATP. Both queries are validated before either runs. Only available when both databases are enabled in this process.",
+            "description": (
+                "Set-compare On-Prem and ATP. Pass one SELECT per database; do not "
+                "join the databases in SQL. The tool validates both statements, runs "
+                "them, and returns the numeric set difference: summary.source_only_count "
+                "(On-Prem only), summary.target_only_count (ATP only), "
+                "summary.matched_records, and summary.attribute_mismatch_count. "
+                "Alias the matching key to the same column name on both sides and pass "
+                "that name as matching_key. A query that selects only that distinct key "
+                "is compared in full, up to 1000000 keys per side, so source_only_count "
+                "is the number of On-Prem keys missing from ATP. Quote those counts. "
+                "If key_comparison is truncated, say the counts are a sample. Only "
+                "available when both databases are enabled in this process."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -224,6 +236,41 @@ _DISCOVERY_NUDGE = (
     "aside. Ask a question only if discovery has run and still leaves a "
     "choice only I can make."
 )
+
+
+# The model sometimes explains that a set difference cannot be done in one SQL
+# statement and stops, even though compare_onprem_and_atp_data exists to do
+# that comparison after two separate queries.
+_COMPARE_REFUSAL = re.compile(
+    r"""
+    set\ difference
+    | single\ validated\ query
+    | cross-join\ pattern
+    | no\ approved\ reconciliation
+    | cannot\ (?:give|provide|perform|run|do).{0,80}(?:count|compar)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_COMPARE_NUDGE = (
+    "You stopped without calling compare_onprem_and_atp_data. That tool is "
+    "the set difference between On-Prem and ATP. Do not refuse, and do not "
+    "write one SQL statement that names both databases.\n\n"
+    "Call compare_onprem_and_atp_data now:\n"
+    "1. onprem_query: one SELECT of the matching key, and any columns to "
+    "compare, from the On-Prem object, with the business filter.\n"
+    "2. atp_query: one SELECT of the same key from the ATP object. Alias the "
+    "key to the same column name as the On-Prem query.\n"
+    "3. matching_key: that shared column name.\n"
+    "4. Answer from summary.source_only_count, summary.target_only_count, "
+    "summary.matched_records, and summary.attribute_mismatch_count. If either "
+    "side is truncated, say the counts describe a sample and narrow the filter."
+)
+
+
+def refuses_cross_database_compare(answer: str) -> bool:
+    """Whether an answer declined a cross-database comparison instead of running it."""
+    return bool(answer) and bool(_COMPARE_REFUSAL.search(answer))
 
 
 def asks_instead_of_discovering(answer: str) -> bool:
@@ -491,6 +538,28 @@ class ChatAgent:
                 # A model that has read the metadata and still needs a decision
                 # is asking legitimately; one that asks before touching a tool
                 # is guessing, and its attribute lists come from memory.
+                compared = any(
+                    step.get("name") == "compare_onprem_and_atp_data" for step in trace
+                )
+                if (
+                    not nudged
+                    and self.service.settings.reconciliation_enabled
+                    and not compared
+                    and refuses_cross_database_compare(answer)
+                ):
+                    nudged = True
+                    emit({"type": "tool", "name": "compare_required", "status": "start", "arguments": {}})
+                    messages.append(message)
+                    messages.append({"role": "user", "content": _COMPARE_NUDGE})
+                    emit(
+                        {
+                            "type": "tool",
+                            "name": "compare_required",
+                            "status": "done",
+                            "summary": "Answer refused a cross-database comparison; required compare_onprem_and_atp_data.",
+                        }
+                    )
+                    continue
                 if not trace and not nudged and asks_instead_of_discovering(answer):
                     nudged = True
                     emit({"type": "tool", "name": "discovery_required", "status": "start", "arguments": {}})

@@ -66,6 +66,17 @@ def test_attribute_mismatches_are_detailed():
     }
 
 
+def test_number_and_text_keys_match():
+    result = compare_result_sets(
+        business_entity="End customer site",
+        matching_key="CMAT_ADDRESS_ID",
+        source=side("On-Prem", [{"CMAT_ADDRESS_ID": 6231290}]),
+        target=side("ATP", [{"CMAT_ADDRESS_ID": "06231290"}]),
+    )
+    assert result["summary"]["matched_records"] == 1
+    assert result["summary"]["source_only_count"] == 0
+
+
 def test_case_and_whitespace_differences_are_not_treated_as_mismatches():
     result = compare_result_sets(
         business_entity="Customer master",
@@ -167,6 +178,29 @@ def test_reconciliation_runs_end_to_end(service, onprem_conn, atp_conn):
     assert payload["summary"]["attribute_mismatch_count"] == 1
     assert payload["data_source_used"]["onprem"]["database"] == "On-Prem Oracle DB"
     assert payload["data_source_used"]["atp"]["database"] == "Oracle ATP"
+
+
+def test_analyst_can_reconcile_without_a_prior_validate_call(
+    service, onprem_conn, atp_conn
+):
+    onprem_conn.set_result(
+        ["CUSTOMER_NUMBER"],
+        [{"CUSTOMER_NUMBER": "C1"}, {"CUSTOMER_NUMBER": "C2"}],
+    )
+    atp_conn.set_result(["CUSTOMER_NUMBER"], [{"CUSTOMER_NUMBER": "C1"}])
+    payload = service.compare_onprem_and_atp_data(
+        business_entity="Customer master",
+        matching_key="CUSTOMER_NUMBER",
+        onprem_query="SELECT customer_number FROM CDM_RPT.V_CUSTOMER_MASTER",
+        atp_query="SELECT customer_number FROM ATP_RPT.V_CUSTOMER_MASTER",
+        user_role="analyst",
+    )
+    assert payload["status"] == "OK"
+    assert payload["summary"]["source_only_count"] == 1
+    assert payload["summary"]["target_only_count"] == 0
+    assert payload["key_comparison"] == "complete"
+    assert onprem_conn.max_rows_seen == 1_000_000
+    assert "FETCH FIRST" not in onprem_conn.executed[0][0].upper()
 
 
 def test_business_user_may_not_reconcile(service):

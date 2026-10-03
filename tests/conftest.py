@@ -95,12 +95,21 @@ class FakeConnection:
         self.executed: list[tuple[str, dict[str, Any]]] = []
         self.truncate = False
         self.raises: Exception | None = None
+        self.max_rows_seen: int | None = None
 
     def set_result(self, columns: list[str], rows: list[dict[str, Any]]) -> None:
         self.columns = columns
         self.rows = rows
 
-    def fetch(self, sql: str, binds: dict[str, Any] | None = None, *, max_rows: int):
+    def fetch(
+        self,
+        sql: str,
+        binds: dict[str, Any] | None = None,
+        *,
+        max_rows: int,
+        timeout_seconds: int | None = None,
+    ):
+        self.max_rows_seen = max_rows
         self.executed.append((sql, dict(binds or {})))
         if self.raises is not None:
             raise self.raises

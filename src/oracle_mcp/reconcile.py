@@ -11,12 +11,17 @@ link that a SQL-side join would require.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .errors import SqlValidationError
 
 MAX_DETAIL_ROWS = 50
+# Distinct-key comparisons load the whole key set. The ordinary row cap is a
+# sample and cannot answer "how many keys are missing".
+MAX_COMPARE_KEYS = 1_000_000
+_INTEGER_TEXT = re.compile(r"[+-]?\d+")
 
 
 @dataclass
@@ -34,14 +39,23 @@ def _key_of(row: dict[str, Any], key_columns: Sequence[str]) -> tuple[Any, ...]:
 
 
 def _normalize(value: Any) -> Any:
-    """Compare case- and whitespace-insensitively for text keys.
+    """Compare keys across NUMBER and VARCHAR2 storage.
 
-    Trailing-space and case differences between a legacy on-prem system and a
-    cloud target are formatting noise, not genuine data breaks, and reporting
-    them as mismatches buries the real ones.
+    Trailing space and letter case are formatting noise. An On-Prem NUMBER and
+    the same value stored as text on ATP (including leading zeros) are the same
+    key. Booleans are left alone because ``bool`` is a subclass of ``int``.
     """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
     if isinstance(value, str):
-        return value.strip().upper()
+        text = value.strip()
+        if _INTEGER_TEXT.fullmatch(text):
+            return str(int(text))
+        return text.upper()
     return value
 
 

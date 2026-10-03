@@ -37,11 +37,42 @@ from .explain import (
 from .masking import Masker
 from .metadata import DataDictionary, MetadataService
 from .policy import PolicyStore, Role
-from .reconcile import SideResult, compare_result_sets
+import sqlglot
+from sqlglot import exp
+
+from .reconcile import MAX_COMPARE_KEYS, SideResult, compare_result_sets
 from .settings import Settings
 from .sql_guard import SqlGuard, ValidationResult
 
 logger = logging.getLogger(__name__)
+
+
+def _projected_column(sql: str) -> str | None:
+    """Return the single selected column name, or None when the query returns more."""
+    try:
+        tree = sqlglot.parse_one(sql, dialect="oracle")
+    except sqlglot.errors.ParseError:
+        return None
+    select = tree.find(exp.Select)
+    if select is None:
+        return None
+    expressions = select.expressions
+    if len(expressions) != 1:
+        return None
+    return expressions[0].alias_or_name.upper()
+
+
+def _is_single_key_projection(onprem_sql: str, atp_sql: str, matching_key: str) -> bool:
+    keys = [part.strip().upper() for part in matching_key.split(",") if part.strip()]
+    if len(keys) != 1:
+        return False
+    return _projected_column(onprem_sql) == keys[0] and _projected_column(atp_sql) == keys[0]
+
+
+def _without_row_limit(sql: str) -> str:
+    tree = sqlglot.parse_one(sql, dialect="oracle")
+    tree.set("limit", None)
+    return tree.sql(dialect="oracle")
 
 _APPROVAL_TTL_SECONDS = 900
 _APPROVAL_CACHE_SIZE = 256
@@ -305,6 +336,19 @@ class ToolService:
                 user_id=resolved_user, role=role, sql=validated_sql,
             )
 
+    def _approve_validated(self, database_name: str, sql: str, role: Role) -> None:
+        """Record a fingerprint when this call has already validated the SQL.
+
+        Roles with ``allow_raw_sql`` false may only execute a statement
+        ``validate_sql`` approved. ``compare_onprem_and_atp_data`` validates
+        both sides itself, so it records that approval before execution.
+        A statement that fails validation is not recorded; ``_prepare_execution``
+        still rejects it.
+        """
+        result = self.guard.validate(sql, database_name=database_name, role=role)
+        if result.approved and result.sql_fingerprint:
+            self.approvals.add(database_name, role.name, result.sql_fingerprint)
+
     def _prepare_execution(
         self, database_name: str, sql: str, role: Role
     ) -> tuple[ValidationResult, OracleConnection]:
@@ -357,14 +401,24 @@ class ToolService:
         role: Role,
         bind_parameters: dict[str, Any] | None,
         database_name: str,
+        *,
+        max_rows_override: int | None = None,
+        timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         sql = result.rewritten_safe_sql or ""
         binds = self._check_binds(result, bind_parameters)
-        row_limit = result.applied_row_limit or self.store.effective_max_rows(
-            role, self.settings.max_rows
-        )
+        if max_rows_override:
+            # The guard's FETCH FIRST would keep a key comparison on a sample.
+            sql = _without_row_limit(sql)
+            row_limit = max_rows_override
+        else:
+            row_limit = result.applied_row_limit or self.store.effective_max_rows(
+                role, self.settings.max_rows
+            )
 
-        columns, rows, truncated, elapsed_ms = connection.fetch(sql, binds, max_rows=row_limit)
+        columns, rows, truncated, elapsed_ms = connection.fetch(
+            sql, binds, max_rows=row_limit, timeout_seconds=timeout_seconds
+        )
 
         object_policy = None
         if len(result.referenced_objects) == 1:
@@ -510,12 +564,30 @@ class ToolService:
                 )
 
             # Both sides validate before either executes, so a rejected second
-            # query cannot leave the first one already run.
+            # query cannot leave the first one already run. Register the
+            # approval here: this tool is the validation step, and analyst
+            # roles cannot pass raw SQL to execute_readonly_sql.
+            self._approve_validated("ONPREM", onprem_query, role)
+            self._approve_validated("ATP", atp_query, role)
             source_plan, source_conn = self._prepare_execution("ONPREM", onprem_query, role)
             target_plan, target_conn = self._prepare_execution("ATP", atp_query, role)
 
-            source_payload = self._run_query(source_plan, source_conn, role, None, "ONPREM")
-            target_payload = self._run_query(target_plan, target_conn, role, None, "ATP")
+            full_keys = _is_single_key_projection(
+                source_plan.rewritten_safe_sql or "",
+                target_plan.rewritten_safe_sql or "",
+                matching_key,
+            )
+            run_kwargs = (
+                {"max_rows_override": MAX_COMPARE_KEYS, "timeout_seconds": 180}
+                if full_keys
+                else {}
+            )
+            source_payload = self._run_query(
+                source_plan, source_conn, role, None, "ONPREM", **run_kwargs
+            )
+            target_payload = self._run_query(
+                target_plan, target_conn, role, None, "ATP", **run_kwargs
+            )
 
             comparison = compare_result_sets(
                 business_entity=sanitize_free_text(business_entity, 120),
@@ -544,6 +616,22 @@ class ToolService:
                     "atp": target_plan.rewritten_safe_sql,
                 }
 
+            if full_keys:
+                comparison["key_comparison"] = "complete" if not (
+                    source_payload["truncated"] or target_payload["truncated"]
+                ) else "truncated"
+                comparison["limitations"] = [
+                    (
+                        "Distinct matching keys were compared in full, up to "
+                        f"{MAX_COMPARE_KEYS} keys per side, rather than the "
+                        f"{role.max_rows}-row sample."
+                        if comparison["key_comparison"] == "complete"
+                        else
+                        "The distinct-key comparison hit its "
+                        f"{MAX_COMPARE_KEYS}-key ceiling, so the counts are a sample."
+                    ),
+                    *comparison["limitations"],
+                ]
             summary = comparison["summary"]
             self._audit(
                 request_id, "compare_onprem_and_atp_data", "ONPREM+ATP", resolved_user, role,

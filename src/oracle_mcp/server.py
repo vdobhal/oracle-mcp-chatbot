@@ -250,11 +250,12 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             compare_columns: list[str] | None = None,
             user_id: str = "",
         ) -> dict[str, Any]:
-            """Reconcile a business entity between On-Prem Oracle DB and Oracle ATP.
+            """Set-compare On-Prem Oracle DB and Oracle ATP.
 
-            Both queries are validated before either runs. Returns matched and
-            unmatched counts, source-only and target-only keys, attribute-level
-            mismatches and a recommendation.
+            Pass one SELECT per database. Do not join the databases in SQL.
+            Both queries are validated before either runs. Returns the numeric
+            set difference: source-only count, target-only count, matched
+            records, attribute mismatches, example keys, and a recommendation.
 
             Args:
                 business_entity: What is being reconciled, for example "Customer master".

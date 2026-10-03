@@ -16,7 +16,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_COLLIBRA_URL = (
-    "https://netaigateway.netapp.com/api/llm/netaiconnect/mcp/collibramcp/server"
+    "https://netaigateway.netapp.com/api/llm/netaiconnect/mcp/collibra-mcp-prod/server"
 )
 
 # Curated standard Collibra tool specifications

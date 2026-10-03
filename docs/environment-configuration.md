@@ -12,18 +12,17 @@ no passwords.
 
 | Supplied | Setting | Value |
 |---|---|---|
-| Host | `ONPREM_HOST` | `raceim02s-scan.corp.netapp.com` |
-| Port | `ONPREM_PORT` | `7020` |
-| Service | `ONPREM_SERVICE_NAME` | `s2eim_etl.corp.netapp.com` |
+| Host | `ONPREM_HOST` | `10.103.160.118` |
+| Port | `ONPREM_PORT` | `1521` |
+| Service | `ONPREM_SERVICE_NAME` | `s2eim.corp.netapp.com` |
 | User | `ONPREM_USER` | `EIM_APPSRO` |
 | Password | `ONPREM_PASSWORD` | in `.env` |
 
 Resolves to the EZConnect DSN
-`raceim02s-scan.corp.netapp.com:7020/s2eim_etl.corp.netapp.com`.
+`10.103.160.118:1521/s2eim.corp.netapp.com`.
 
-`-scan` indicates a RAC SCAN listener, which resolves to several cluster nodes.
-Thin mode follows that without extra configuration, so no client-side load
-balancing settings are needed.
+The host is a direct listener address. Thin mode connects to that host, port,
+and service with no extra client-side load balancing.
 
 ### ATP
 
