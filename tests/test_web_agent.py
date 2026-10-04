@@ -8,7 +8,9 @@ from oracle_mcp.agent import (
     ChatAgent,
     _is_party_site_mismatch,
     answer_needs_party_site_summary,
+    answer_needs_variant_site_summary,
     asks_instead_of_discovering,
+    question_needs_variant_site_summary,
     refuses_cross_database_compare,
     compact_tool_result,
     tools_for,
@@ -179,6 +181,115 @@ def test_site_mismatch_timeout_is_sent_back_to_the_summary_tool(service):
     result = ChatAgent(service, llm).run("how many active serials have different sites?")
     assert "229,403" in result["answer"]
     assert result["tools"][0]["name"] == "summarize_party_site_mismatch"
+
+
+VARIANT_REFUSAL = (
+    "I can’t give you this variant-site count with the current governed tools, "
+    "because none of them expose ADDRESS_VARIANT_FLAG from CDM when working from "
+    "serial numbers. summarize_party_site_mismatch does not expose it, so this "
+    "has to be implemented as a sanctioned tool."
+)
+
+
+def test_variant_site_refusal_is_sent_to_the_variant_tool(service):
+    assert question_needs_variant_site_summary(
+        "HOW MANY ACTIVE SERIAL NUMBER END CUSTOMER SITE BELONG TO VARIENT SITE"
+    ) is True
+    assert question_needs_variant_site_summary(
+        "how many active serials have different end customer and installed at sites?"
+    ) is False
+    assert answer_needs_variant_site_summary(VARIANT_REFUSAL) is True
+    llm = ScriptedLlm(
+        [
+            {"role": "assistant", "content": VARIANT_REFUSAL},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "var",
+                        "function": {
+                            "name": "summarize_end_customer_variant_sites",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "17 serials sit on a variant End Customer site."},
+        ]
+    )
+    service.summarize_end_customer_variant_sites = lambda **kwargs: {
+        "status": "OK",
+        "variant_serials": 17,
+    }
+    result = ChatAgent(service, llm).run(
+        "how many active serials have an end customer site that belongs to a variant site?"
+    )
+    assert "17 serials" in result["answer"]
+    assert result["tools"][0]["name"] == "summarize_end_customer_variant_sites"
+
+
+def test_variant_flag_compare_is_redirected_to_the_variant_tool(service):
+    service.summarize_end_customer_variant_sites = lambda **kwargs: {
+        "status": "OK",
+        "variant_serials": 17,
+    }
+    agent = ChatAgent(service, llm=None)
+    result = agent.invoke_tool(
+        "compare_onprem_and_atp_data",
+        {
+            "onprem_query": "SELECT cmat_site_id FROM eim.eim_pr_ib_latest WHERE role_id = 1",
+            "atp_query": (
+                "SELECT cmat_address_id FROM napperp.napp_cdm_to_atp_sync "
+                "WHERE address_variant_flag = 'Y'"
+            ),
+            "matching_key": "cmat_address_id",
+            "business_entity": "variant site",
+        },
+    )
+    assert result["variant_serials"] == 17
+
+
+def test_variant_site_summary_reads_the_true_flag_then_counts_onprem(service, monkeypatch):
+    calls = []
+
+    def fake_query(database, sql, role, max_rows):
+        calls.append((database, sql, max_rows))
+        if database == "ATP":
+            return {
+                "rows": [
+                    {
+                        "CMAT_ADDRESS_ID": "710013695",
+                        "COUNTRY": "US",
+                        "COMPANY_NAME": "NetApp Cloud Volumes-AMER",
+                        "COMPANY_VARIANT_FLAG": "true",
+                    }
+                ],
+                "truncated": False,
+                "row_count": 1,
+            }
+        return {
+            "rows": [
+                {"CMAT_SITE_ID": 710013695, "SERIALS": 7},
+                {"CMAT_SITE_ID": None, "SERIALS": 7},
+            ],
+            "truncated": False,
+            "row_count": 2,
+        }
+
+    monkeypatch.setattr(service, "_run_governed_query", fake_query)
+    result = service.summarize_end_customer_variant_sites("analyst")
+    assert result["status"] == "OK"
+    assert result["variant_serials"] == 7
+    assert result["variant_flag_value"] == "true"
+    assert "address_variant_flag = 'true'" in calls[0][1].lower()
+    assert "710013695" in calls[1][1]
+    assert calls[1][0] == "ONPREM"
+    cached = service.summarize_end_customer_variant_sites("analyst")
+    assert cached["cache_hit"] is True
+    assert len(calls) == 2
+    denied = service.summarize_end_customer_variant_sites("business_user")
+    assert denied["error_code"] == "ACCESS_DENIED"
 
 
 def test_cross_database_refusal_is_recognised():

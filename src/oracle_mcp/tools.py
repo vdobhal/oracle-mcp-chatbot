@@ -45,11 +45,15 @@ import sqlglot
 from sqlglot import exp
 
 from .reconcile import (
+    ADDRESS_VARIANT_FLAG_VALUE,
     MAX_COMPARE_KEYS,
     SideResult,
     _normalize,
     compare_result_sets,
+    numeric_site_ids,
     summarize_site_mismatch_rows,
+    summarize_variant_site_groups,
+    variant_site_count_statements,
 )
 from .settings import Settings
 from .sql_guard import SqlGuard, ValidationResult
@@ -740,6 +744,98 @@ class ToolService:
         except ChatbotError as exc:
             return self._handle(
                 exc, request_id, "summarize_party_site_mismatch", "ONPREM+ATP", user_role, role=role
+            )
+
+    def summarize_end_customer_variant_sites(self, user_role: str | None = None) -> dict[str, Any]:
+        """Count active serials whose End Customer site is a CDM variant site.
+
+        CDM stores the site flag as ADDRESS_VARIANT_FLAG = 'true'. The address
+        list is read from ATP, then On-Prem counts End Customer role 1 sites in
+        that list. The two databases are never joined in one SQL statement.
+        """
+        request_id = new_request_id()
+        role: Role | None = None
+        try:
+            role, resolved_user = self._identity(user_role)
+            if not self.settings.reconciliation_enabled or not role.allow_reconciliation:
+                raise AccessDeniedError(
+                    "Variant-site counts need both databases and a role that may reconcile them.",
+                    next_steps=["Ask an analyst to run summarize_end_customer_variant_sites."],
+                )
+            summary_key = f"end-customer-variant-sites:{role.name.lower()}"
+            cached, cache_age = self.summary_cache.get(summary_key)
+            if cached is not None:
+                self.metrics.cache_hit("ONPREM+ATP")
+                cached["cache_hit"] = True
+                cached["cache_age_seconds"] = round(cache_age, 1)
+                self._audit(
+                    request_id,
+                    "summarize_end_customer_variant_sites",
+                    "ONPREM+ATP",
+                    resolved_user,
+                    role,
+                    "SUCCESS",
+                    row_count=cached["variant_serials"],
+                    response_summary=f"cache_hit variant_serials={cached['variant_serials']}",
+                )
+                return self._ok(cached, request_id)
+
+            self.metrics.cache_miss("ONPREM+ATP")
+            addresses = self._run_governed_query(
+                "ATP",
+                "SELECT cmat_address_id, country, company_name, company_variant_flag "
+                "FROM napperp.napp_cdm_to_atp_sync "
+                f"WHERE address_variant_flag = '{ADDRESS_VARIANT_FLAG_VALUE}'",
+                role,
+                max_rows=10_000,
+            )
+            site_ids = numeric_site_ids(addresses["rows"])
+            group_rows: list[dict[str, Any]] = []
+            truncated = bool(addresses["truncated"])
+            for statement in variant_site_count_statements(site_ids):
+                counted = self._run_governed_query(
+                    "ONPREM", statement, role, max_rows=10_000
+                )
+                group_rows.extend(counted["rows"])
+                truncated = truncated or bool(counted["truncated"])
+            summary = summarize_variant_site_groups(group_rows, addresses["rows"])
+            summary.update(
+                {
+                    "variant_flag_column": "ADDRESS_VARIANT_FLAG",
+                    "variant_flag_value": ADDRESS_VARIANT_FLAG_VALUE,
+                    "active_contract_definition": (
+                        "INSTALLED_PRODUCT_STATUS = 'ACTIVE' and "
+                        "HARDWARE_SERV_END_DATE > SYSDATE on EIM.EIM_PR_SYSTEM. "
+                        "End Customer is ROLE_ID 1 on EIM.EIM_PR_IB_LATEST. "
+                        "A variant site is ADDRESS_VARIANT_FLAG = 'true' on "
+                        "NAPPERP.NAPP_CDM_TO_ATP_SYNC, matched by "
+                        "CMAT_ADDRESS_ID = CMAT_SITE_ID."
+                    ),
+                    "truncated": truncated,
+                    "cache_hit": False,
+                    "cache_age_seconds": 0.0,
+                }
+            )
+            self.summary_cache.set(summary_key, summary)
+            self._audit(
+                request_id,
+                "summarize_end_customer_variant_sites",
+                "ONPREM+ATP",
+                resolved_user,
+                role,
+                "SUCCESS",
+                row_count=summary["variant_serials"],
+                response_summary=f"variant_serials={summary['variant_serials']}",
+            )
+            return self._ok(summary, request_id)
+        except ChatbotError as exc:
+            return self._handle(
+                exc,
+                request_id,
+                "summarize_end_customer_variant_sites",
+                "ONPREM+ATP",
+                user_role,
+                role=role,
             )
 
     def _run_governed_query(

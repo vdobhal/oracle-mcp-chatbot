@@ -181,7 +181,30 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "EIM_CONTRACT_LINES_PUB_VW. Active contract means "
                 "INSTALLED_PRODUCT_STATUS = 'ACTIVE' and HARDWARE_SERV_END_DATE > SYSDATE "
                 "on EIM_PR_SYSTEM. Quote mismatch_serials, same_country_serials, "
-                "different_country_serials, top_cross_country, and top_site_pairs."
+                "different_country_serials, top_cross_country, and top_site_pairs. "
+                "Do not use this for a variant-site count. Call "
+                "summarize_end_customer_variant_sites instead."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "summarize_end_customer_variant_sites",
+            "description": (
+                "Count active serials whose End Customer site is a CDM variant site. "
+                "Use this when the question mentions a variant or varient site, "
+                "ADDRESS_VARIANT_FLAG, or an End Customer address CMAT ID that belongs "
+                "to a variant site. The tool reads ADDRESS_VARIANT_FLAG = 'true' from "
+                "NAPPERP.NAPP_CDM_TO_ATP_SYNC, then counts On-Prem serials where "
+                "INSTALLED_PRODUCT_STATUS = 'ACTIVE', HARDWARE_SERV_END_DATE > SYSDATE, "
+                "and End Customer ROLE_ID = 1 CMAT_SITE_ID matches that address. "
+                "Do not write SQL, do not join the databases, do not use "
+                "compare_onprem_and_atp_data, and do not use "
+                "summarize_party_site_mismatch. The flag value is the string true, "
+                "not Y. Quote variant_serials, cdm_variant_addresses, "
+                "serials_by_country, and top_sites."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -204,7 +227,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "available when both databases are enabled in this process. "
                 "Do not use this for End Customer versus Installed At site "
                 "mismatches; those sites are both on On-Prem. Call "
-                "summarize_party_site_mismatch instead."
+                "summarize_party_site_mismatch instead. Do not use this for a "
+                "variant-site count. Call summarize_end_customer_variant_sites."
             ),
             "parameters": {
                 "type": "object",
@@ -319,6 +343,49 @@ _SITE_MISMATCH_NUDGE = (
 )
 
 
+def question_needs_variant_site_summary(question: str) -> bool:
+    """Whether the user asked how many End Customer sites are CDM variant sites."""
+    text = question or ""
+    if not re.search(r"vari(?:a|e)nt", text, re.IGNORECASE):
+        return False
+    return bool(re.search(r"site|cmat|end customer|address", text, re.IGNORECASE))
+
+
+def answer_needs_variant_site_summary(answer: str) -> bool:
+    """Whether an answer gave up on the CDM variant-site serial count."""
+    if not re.search(
+        r"address_variant_flag|vari(?:a|e)nt[\s\-]*site",
+        answer or "",
+        re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"cannot|can[’'‘]t|do not expose|does not expose|not expose|"
+            r"no governed|sanctioned tool|unable",
+            answer,
+            re.IGNORECASE,
+        )
+    )
+
+
+_VARIANT_SITE_NUDGE = (
+    "This question counts active serials whose End Customer site is a CDM "
+    "variant site. Do not refuse. Do not join On-Prem to ATP in one SQL "
+    "statement. Do not call compare_onprem_and_atp_data or "
+    "summarize_party_site_mismatch.\n\n"
+    "Call summarize_end_customer_variant_sites now. Quote variant_serials, "
+    "cdm_variant_addresses, serials_by_country, and top_sites. "
+    "ADDRESS_VARIANT_FLAG is already applied. The stored value is the string "
+    "true, not Y."
+)
+
+
+def _is_variant_site_compare(sql: str) -> bool:
+    """Whether a compare request is really the End Customer variant-site count."""
+    return bool(re.search(r"address_variant_flag|vari(?:a|e)nt", sql or "", re.IGNORECASE))
+
+
 def answer_needs_party_site_summary(answer: str) -> bool:
     """Whether an answer gave up on the End Customer versus Installed At site count."""
     if not re.search(r"end customer|installed at", answer or "", re.IGNORECASE):
@@ -375,6 +442,7 @@ def tools_for(
     if service.settings.reconciliation_enabled:
         names.add("compare_onprem_and_atp_data")
         names.add("summarize_party_site_mismatch")
+        names.add("summarize_end_customer_variant_sites")
     specs = [spec for spec in TOOL_SPECS if spec["function"]["name"] in names]
     if collibra is not None:
         specs.extend(collibra.list_tools())
@@ -527,6 +595,7 @@ class ChatAgent:
             "explain_query_result": service.explain_query_result,
             "compare_onprem_and_atp_data": service.compare_onprem_and_atp_data,
             "summarize_party_site_mismatch": service.summarize_party_site_mismatch,
+            "summarize_end_customer_variant_sites": service.summarize_end_customer_variant_sites,
         }
 
     def _execute(self, **kwargs: Any) -> dict[str, Any]:
@@ -551,8 +620,15 @@ class ChatAgent:
                 "error_code": "UNKNOWN_TOOL",
                 "message": f"{name} is not an available tool on this server.",
             }
-        if name == "compare_onprem_and_atp_data" and _is_party_site_mismatch(arguments.get("onprem_query", "")):
-            return self.service.summarize_party_site_mismatch()
+        if name == "compare_onprem_and_atp_data":
+            compared_sql = " ".join(
+                str(arguments.get(key) or "")
+                for key in ("onprem_query", "atp_query", "business_entity")
+            )
+            if _is_variant_site_compare(compared_sql):
+                return self.service.summarize_end_customer_variant_sites()
+            if _is_party_site_mismatch(arguments.get("onprem_query", "")):
+                return self.service.summarize_party_site_mismatch()
         if name == "compare_onprem_and_atp_data" and not self.service.settings.reconciliation_enabled:
             return {
                 "status": "ERROR",
@@ -612,6 +688,31 @@ class ChatAgent:
                 summarized = any(
                     step.get("name") == "summarize_party_site_mismatch" for step in trace
                 )
+                variant_counted = any(
+                    step.get("name") == "summarize_end_customer_variant_sites" for step in trace
+                )
+                if (
+                    not nudged
+                    and self.service.settings.reconciliation_enabled
+                    and not variant_counted
+                    and (
+                        question_needs_variant_site_summary(question)
+                        or answer_needs_variant_site_summary(answer)
+                    )
+                ):
+                    nudged = True
+                    emit({"type": "tool", "name": "variant_site_summary_required", "status": "start", "arguments": {}})
+                    messages.append(message)
+                    messages.append({"role": "user", "content": _VARIANT_SITE_NUDGE})
+                    emit(
+                        {
+                            "type": "tool",
+                            "name": "variant_site_summary_required",
+                            "status": "done",
+                            "summary": "Answer missed the variant-site count; required summarize_end_customer_variant_sites.",
+                        }
+                    )
+                    continue
                 if (
                     not nudged
                     and self.service.settings.reconciliation_enabled

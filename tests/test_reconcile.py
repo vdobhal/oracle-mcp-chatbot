@@ -5,7 +5,14 @@ from __future__ import annotations
 import pytest
 
 from oracle_mcp.errors import SqlValidationError
-from oracle_mcp.reconcile import SideResult, compare_result_sets
+from oracle_mcp.reconcile import (
+    SideResult,
+    compare_result_sets,
+    numeric_site_ids,
+    summarize_variant_site_groups,
+    variant_site_count_sql,
+    variant_site_count_statements,
+)
 
 ONPREM_SQL = "SELECT customer_number, customer_status FROM CDM_RPT.V_CUSTOMER_MASTER"
 ATP_SQL = "SELECT customer_number, customer_status FROM ATP_RPT.V_CUSTOMER_MASTER"
@@ -261,3 +268,53 @@ def test_reconciliation_is_unavailable_on_a_single_database_server(
     )
     assert payload["status"] == "ERROR"
     assert "single database" in payload["message"]
+
+
+def test_variant_site_sql_uses_the_end_customer_role_and_limits_in_lists():
+    sql = variant_site_count_sql([710013695, 21241421])
+    lowered = sql.lower()
+    assert "role_id = 1" in lowered
+    assert "installed_product_status = 'active'" in lowered
+    assert "hardware_serv_end_date > sysdate" in lowered
+    assert "710013695" in sql
+    assert "grouping sets" in lowered
+    wide = variant_site_count_sql(list(range(1001)))
+    in_lists = [part.split(")")[0] for part in wide.lower().split(" in (")[1:]]
+    assert len(in_lists) == 2
+    assert all(len(part.split(",")) <= 1000 for part in in_lists)
+
+
+def test_large_variant_site_lists_are_split_under_the_sql_guard_limit():
+    statements = variant_site_count_statements([10_000_000_000 + n for n in range(3000)])
+    assert len(statements) > 1
+    assert all(len(statement) <= 18_000 for statement in statements)
+
+
+def test_variant_site_summary_uses_the_grouping_total_and_cdm_country():
+    summary = summarize_variant_site_groups(
+        [
+            {"CMAT_SITE_ID": 710013695, "SERIALS": 7},
+            {"CMAT_SITE_ID": 21241421, "SERIALS": 1},
+            {"CMAT_SITE_ID": None, "SERIALS": 8},
+        ],
+        [
+            {
+                "CMAT_ADDRESS_ID": "0710013695",
+                "COUNTRY": "US",
+                "COMPANY_NAME": "NetApp Cloud Volumes-AMER",
+                "COMPANY_VARIANT_FLAG": "true",
+            },
+            {
+                "CMAT_ADDRESS_ID": "21241421",
+                "COUNTRY": "US",
+                "COMPANY_NAME": "VERIZON-VCP",
+                "COMPANY_VARIANT_FLAG": "false",
+            },
+        ],
+    )
+    assert summary["variant_serials"] == 8
+    assert summary["cdm_variant_addresses"] == 2
+    assert summary["company_variant_serials"] == 7
+    assert summary["top_sites"][0]["company_name"] == "NetApp Cloud Volumes-AMER"
+    assert summary["serials_by_country"] == [{"country": "US", "serials": 8}]
+    assert numeric_site_ids([{"CMAT_ADDRESS_ID": "00123"}, {"CMAT_ADDRESS_ID": "ABC"}]) == [123]

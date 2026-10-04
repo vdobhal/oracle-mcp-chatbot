@@ -187,6 +187,7 @@ serial-number attribute check. Those columns are on `EIM.EIM_PR_SYSTEM`, and
 | Service-contract lines | `EIM.EIM_CONTRACT_LINES_PUB_VW` | `SYSTEM_SERIAL_NUMBER` |
 | Latest party roles for one serial | `EIM.EIM_IB_LATEST_PUB` joined to `EIM.EIM_PR_ROLES` for the role label only | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID` |
 | How many active serials have a different End Customer site and Installed At site, including country | `summarize_party_site_mismatch` | Do not write this SQL yourself |
+| How many active serials have an End Customer site that is a CDM variant site | `summarize_end_customer_variant_sites` | Do not write this SQL yourself |
 | Company name, NAGP, DP, and address for a party role | On-Prem `EIM_IB_LATEST_PUB` (`CMAT_CUSTOMER_ID`, `CMAT_SITE_ID`), then ATP `NAPPERP.NAPP_CDM_TO_ATP_SYNC` | `CMAT_ID` = `CMAT_CUSTOMER_ID`; `CMAT_ADDRESS_ID` = `CMAT_SITE_ID` |
 | Shelf / drive configuration | `EIM.EIM_CONFIG_DETAIL_VW` | `PRIMARY_SN` |
 | Opportunities | `EIM.EIM_OPPTY_DETAILS_VW`, or `EIM_OPPTY_DETAILS` joined to `EIM_OPPTY_SN_DETAILS` on `OPPTY_ID` | `OPPTY_ID` or `SYSTEM_SERIAL_NUMBER` |
@@ -211,6 +212,16 @@ and quote its counts. Do not call `compare_onprem_and_atp_data`. Do not join
 `INSTALLED_PRODUCT_STATUS = 'ACTIVE'` and `HARDWARE_SERV_END_DATE > SYSDATE`
 on `EIM.EIM_PR_SYSTEM`. End Customer is role 1 and Installed At is role 10 on
 `EIM.EIM_PR_IB_LATEST`. Country is already included in the tool result.
+
+A question that counts active serials whose End Customer address CMAT ID belongs
+to a variant site is also not a SQL join. Call
+`summarize_end_customer_variant_sites` and quote `variant_serials`,
+`cdm_variant_addresses`, `serials_by_country`, and `top_sites`. The site flag
+is `ADDRESS_VARIANT_FLAG` on `NAPPERP.NAPP_CDM_TO_ATP_SYNC`, and the stored
+value that means a variant site is the string `true`, not `Y`. Do not call
+`summarize_party_site_mismatch` or `compare_onprem_and_atp_data` for this
+question. Do not invent a flag value or write a statement that names both
+databases.
 
 ## Query performance
 

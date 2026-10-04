@@ -285,6 +285,128 @@ def _recommend(source_only: int, target_only: int, mismatches: int, truncated: b
     return " ".join(parts)
 
 
+# Oracle rejects an IN list longer than 1000 expressions. The SQL guard rejects
+# a statement longer than its configured maximum, so a large variant-site set is
+# split into several statements that each stay under this size.
+_IN_LIST_LIMIT = 1000
+_MAX_VARIANT_SQL_CHARS = 18_000
+ADDRESS_VARIANT_FLAG_VALUE = "true"
+
+
+def numeric_site_ids(addresses: Sequence[dict[str, Any]]) -> list[int]:
+    """Return distinct integer CMAT address IDs, matching On-Prem NUMBER sites."""
+    found: set[int] = set()
+    for row in addresses:
+        key = _normalize(row.get("CMAT_ADDRESS_ID"))
+        if isinstance(key, str) and key.lstrip("-").isdigit():
+            found.add(int(key))
+    return sorted(found)
+
+
+def variant_site_count_sql(site_ids: Sequence[int]) -> str:
+    """Count active End Customer serials on the supplied sites.
+
+    The grand-total grouping row has a null ``CMAT_SITE_ID`` and is the distinct
+    serial count. Per-site rows carry ``SERIALS`` for the CDM country breakdown.
+    """
+    ids = [int(site_id) for site_id in site_ids]
+    if not ids:
+        raise ValueError("variant site SQL requires at least one site id")
+    predicates: list[str] = []
+    for start in range(0, len(ids), _IN_LIST_LIMIT):
+        batch = ", ".join(str(site_id) for site_id in ids[start:start + _IN_LIST_LIMIT])
+        predicates.append(f"ec.cmat_site_id IN ({batch})")
+    predicate = " OR ".join(predicates)
+    return (
+        "SELECT ec.cmat_site_id, COUNT(DISTINCT ec.system_serial_number) AS serials "
+        "FROM eim.eim_pr_ib_latest ec "
+        "JOIN eim.eim_pr_system s "
+        "ON s.system_serial_number = ec.system_serial_number "
+        "WHERE ec.role_id = 1 "
+        f"AND ({predicate}) "
+        "AND s.installed_product_status = 'ACTIVE' "
+        "AND s.hardware_serv_end_date > SYSDATE "
+        "GROUP BY GROUPING SETS ((ec.cmat_site_id), ())"
+    )
+
+
+def variant_site_count_statements(site_ids: Sequence[int]) -> list[str]:
+    """One or more On-Prem statements, each short enough for the SQL guard."""
+    ids = [int(site_id) for site_id in site_ids]
+    if not ids:
+        return []
+    sql = variant_site_count_sql(ids)
+    if len(sql) <= _MAX_VARIANT_SQL_CHARS or len(ids) == 1:
+        return [sql]
+    mid = len(ids) // 2
+    return variant_site_count_statements(ids[:mid]) + variant_site_count_statements(ids[mid:])
+
+
+def summarize_variant_site_groups(
+    group_rows: Sequence[dict[str, Any]],
+    addresses: Sequence[dict[str, Any]],
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Attach CDM company and country to End Customer sites on variant addresses.
+
+    A null ``CMAT_SITE_ID`` row is the distinct serial total from ``GROUPING SETS``.
+    When several statements were required, those totals are summed. The site
+    lists are disjoint, so a serial is counted twice only if it has two End
+    Customer role rows on variant sites that fell into different statements.
+    """
+    by_site: dict[str, dict[str, Any]] = {}
+    for row in addresses:
+        key = _normalize(row.get("CMAT_ADDRESS_ID"))
+        if key is not None:
+            by_site[str(key)] = row
+
+    variant_serials = 0
+    partitions = 0
+    sites: list[dict[str, Any]] = []
+    for row in group_rows:
+        site = _normalize(row.get("CMAT_SITE_ID"))
+        serials = int(row.get("SERIALS") or 0)
+        if site is None:
+            variant_serials += serials
+            partitions += 1
+            continue
+        info = by_site.get(str(site), {})
+        sites.append(
+            {
+                "serials": serials,
+                "end_customer_site_id": str(site),
+                "company_name": info.get("COMPANY_NAME"),
+                "country": info.get("COUNTRY"),
+                "company_variant_flag": info.get("COMPANY_VARIANT_FLAG"),
+            }
+        )
+    if partitions == 0:
+        variant_serials = sum(item["serials"] for item in sites)
+    sites.sort(key=lambda item: (-item["serials"], item["end_customer_site_id"]))
+    countries: dict[str, int] = {}
+    company_variant_serials = 0
+    for site in sites:
+        country = site["country"] or "Unknown"
+        countries[country] = countries.get(country, 0) + int(site["serials"])
+        if str(site.get("company_variant_flag") or "").lower() == ADDRESS_VARIANT_FLAG_VALUE:
+            company_variant_serials += int(site["serials"])
+    country_rows = [
+        {"country": country, "serials": count}
+        for country, count in sorted(countries.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return {
+        "variant_serials": variant_serials,
+        "variant_sites_with_serials": len(sites),
+        "cdm_variant_addresses": len(by_site),
+        "site_partitions": partitions,
+        "company_variant_serials": company_variant_serials,
+        "top_sites": sites[:limit],
+        "sites_omitted": max(0, len(sites) - limit),
+        "serials_by_country": country_rows[:limit],
+    }
+
+
 def _limitations(truncated: bool, source: SideResult, target: SideResult) -> list[str]:
     notes: list[str] = []
     if truncated:

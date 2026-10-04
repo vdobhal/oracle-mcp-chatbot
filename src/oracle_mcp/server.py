@@ -276,6 +276,21 @@ def create_server(settings: Settings | None = None) -> FastMCP:
                 user_id or None,
             )
 
+        @mcp.tool
+        def summarize_end_customer_variant_sites(user_role: str = "") -> dict[str, Any]:
+            """Count active serials whose End Customer site is a CDM variant site.
+
+            Reads ADDRESS_VARIANT_FLAG = 'true' from NAPPERP.NAPP_CDM_TO_ATP_SYNC,
+            then counts On-Prem serials that are ACTIVE with
+            HARDWARE_SERV_END_DATE > SYSDATE and whose End Customer CMAT_SITE_ID
+            (role 1) is one of those addresses. Do not join the databases in SQL.
+            The flag value is the string true, not Y.
+
+            Args:
+                user_role: Requesting role. Ignored when the server pins roles by configuration.
+            """
+            return service.summarize_end_customer_variant_sites(user_role or None)
+
     logger.info(
         "MCP server ready: profile=%s databases=%s transport=%s role_binding=%s max_rows=%d",
         settings.profile,
