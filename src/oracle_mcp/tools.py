@@ -21,6 +21,7 @@ between could swap the statement.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import OrderedDict
 from typing import Any
@@ -40,7 +41,13 @@ from .policy import PolicyStore, Role
 import sqlglot
 from sqlglot import exp
 
-from .reconcile import MAX_COMPARE_KEYS, SideResult, compare_result_sets
+from .reconcile import (
+    MAX_COMPARE_KEYS,
+    SideResult,
+    _normalize,
+    compare_result_sets,
+    summarize_site_mismatch_rows,
+)
 from .settings import Settings
 from .sql_guard import SqlGuard, ValidationResult
 
@@ -67,6 +74,14 @@ def _is_single_key_projection(onprem_sql: str, atp_sql: str, matching_key: str) 
     if len(keys) != 1:
         return False
     return _projected_column(onprem_sql) == keys[0] and _projected_column(atp_sql) == keys[0]
+
+
+_SITE_ID = re.compile(r"-?\d+")
+
+
+def _site_key(value: Any) -> str:
+    normalized = _normalize(value)
+    return "" if normalized is None else str(normalized)
 
 
 def _without_row_limit(sql: str) -> str:
@@ -531,6 +546,111 @@ class ToolService:
             return self._fail(exc, request_id)
 
     # ---- tool 8 ------------------------------------------------------------
+
+    def summarize_party_site_mismatch(self, user_role: str | None = None) -> dict[str, Any]:
+        """Count active serials whose End Customer and Installed At sites differ.
+
+        Both roles are on On-Prem. ATP is used only to attach country and
+        company to the mismatched address CMAT IDs. This is not a
+        cross-database set difference, and it does not join the contract view.
+        Active contract means the serial is ACTIVE and HARDWARE_SERV_END_DATE
+        is still in the future.
+        """
+        request_id = new_request_id()
+        role: Role | None = None
+        try:
+            role, resolved_user = self._identity(user_role)
+            population_sql = """
+                SELECT COUNT(*) AS active_contract_serials
+                FROM eim.eim_pr_system
+                WHERE installed_product_status = 'ACTIVE'
+                  AND hardware_serv_end_date > SYSDATE
+            """
+            mismatch_sql = """
+                SELECT s.system_serial_number,
+                       ec.cmat_site_id AS end_customer_site_id,
+                       ia.cmat_site_id AS installed_at_site_id
+                FROM eim.eim_pr_system s
+                JOIN eim.eim_pr_ib_latest ec
+                  ON ec.system_serial_number = s.system_serial_number
+                 AND ec.role_id = 1
+                JOIN eim.eim_pr_ib_latest ia
+                  ON ia.system_serial_number = s.system_serial_number
+                 AND ia.role_id = 10
+                WHERE s.installed_product_status = 'ACTIVE'
+                  AND s.hardware_serv_end_date > SYSDATE
+                  AND ec.cmat_site_id <> ia.cmat_site_id
+            """
+            population = self._run_governed_query("ONPREM", population_sql, role, max_rows=10)
+            mismatches = self._run_governed_query(
+                "ONPREM", mismatch_sql, role, max_rows=MAX_COMPARE_KEYS
+            )
+            countries = self._cdm_countries(
+                role,
+                {
+                    str(_site_key(row.get("END_CUSTOMER_SITE_ID")))
+                    for row in mismatches["rows"]
+                }
+                | {
+                    str(_site_key(row.get("INSTALLED_AT_SITE_ID")))
+                    for row in mismatches["rows"]
+                },
+            )
+            summary = summarize_site_mismatch_rows(mismatches["rows"], countries)
+            summary.update(
+                {
+                    "active_contract_serials": (population["rows"][0].get("ACTIVE_CONTRACT_SERIALS") if population["rows"] else None),
+                    "active_contract_definition": (
+                        "INSTALLED_PRODUCT_STATUS = 'ACTIVE' and "
+                        "HARDWARE_SERV_END_DATE > SYSDATE on EIM.EIM_PR_SYSTEM. "
+                        "End Customer is ROLE_ID 1 and Installed At is ROLE_ID 10 "
+                        "on EIM.EIM_PR_IB_LATEST. Country is COUNTRY on "
+                        "NAPPERP.NAPP_CDM_TO_ATP_SYNC matched by CMAT_ADDRESS_ID."
+                    ),
+                    "truncated": mismatches["truncated"],
+                }
+            )
+            self._audit(
+                request_id, "summarize_party_site_mismatch", "ONPREM+ATP", resolved_user, role,
+                "SUCCESS",
+                row_count=summary["mismatch_serials"],
+                response_summary=f"mismatch_serials={summary['mismatch_serials']}",
+            )
+            return self._ok(summary, request_id)
+        except ChatbotError as exc:
+            return self._handle(
+                exc, request_id, "summarize_party_site_mismatch", "ONPREM+ATP", user_role, role=role
+            )
+
+    def _run_governed_query(
+        self, database_name: str, sql: str, role: Role, *, max_rows: int
+    ) -> dict[str, Any]:
+        self._approve_validated(database_name, sql, role)
+        plan, connection = self._prepare_execution(database_name, sql, role)
+        return self._run_query(
+            plan, connection, role, None, database_name,
+            max_rows_override=max_rows, timeout_seconds=180,
+        )
+
+    def _cdm_countries(self, role: Role, site_ids: set[str]) -> dict[str, dict[str, Any]]:
+        countries: dict[str, dict[str, Any]] = {}
+        valid = sorted(site for site in site_ids if _SITE_ID.fullmatch(site or ""))
+        for start in range(0, len(valid), 400):
+            batch = valid[start:start + 400]
+            quoted = ", ".join(f"'{site}'" for site in batch)
+            sql = (
+                "SELECT cmat_address_id, country, company_name "
+                "FROM napperp.napp_cdm_to_atp_sync "
+                f"WHERE cmat_address_id IN ({quoted})"
+            )
+            payload = self._run_governed_query("ATP", sql, role, max_rows=500)
+            for row in payload["rows"]:
+                site = str(_site_key(row.get("CMAT_ADDRESS_ID")))
+                countries[site] = {
+                    "country": row.get("COUNTRY"),
+                    "company": row.get("COMPANY_NAME"),
+                }
+        return countries
 
     def compare_onprem_and_atp_data(
         self,

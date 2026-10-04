@@ -172,6 +172,22 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "summarize_party_site_mismatch",
+            "description": (
+                "Count active serials whose End Customer site and Installed At site "
+                "differ, then attach CDM country. Use this for that question. Do not "
+                "use compare_onprem_and_atp_data, and do not join "
+                "EIM_CONTRACT_LINES_PUB_VW. Active contract means "
+                "INSTALLED_PRODUCT_STATUS = 'ACTIVE' and HARDWARE_SERV_END_DATE > SYSDATE "
+                "on EIM_PR_SYSTEM. Quote mismatch_serials, same_country_serials, "
+                "different_country_serials, top_cross_country, and top_site_pairs."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "compare_onprem_and_atp_data",
             "description": (
                 "Set-compare On-Prem and ATP. Pass one SELECT per database; do not "
@@ -184,7 +200,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "is compared in full, up to 1000000 keys per side, so source_only_count "
                 "is the number of On-Prem keys missing from ATP. Quote those counts. "
                 "If key_comparison is truncated, say the counts are a sample. Only "
-                "available when both databases are enabled in this process."
+                "available when both databases are enabled in this process. "
+                "Do not use this for End Customer versus Installed At site "
+                "mismatches; those sites are both on On-Prem. Call "
+                "summarize_party_site_mismatch instead."
             ),
             "parameters": {
                 "type": "object",
@@ -279,6 +298,39 @@ _COMPARE_NUDGE = (
 )
 
 
+def _is_party_site_mismatch(sql: str) -> bool:
+    """Whether a compare request is really an On-Prem End Customer versus Installed At check."""
+    text = (sql or "").lower()
+    mentions_sites = "cmat_site" in text or "installed at" in text or "end customer" in text
+    mentions_roles = "eim_pr_ib_latest" in text or "role_id" in text
+    return mentions_sites and mentions_roles
+
+
+_SITE_MISMATCH_NUDGE = (
+    "This is an On-Prem comparison of End Customer site versus Installed At "
+    "site. Do not call compare_onprem_and_atp_data, and do not join "
+    "EIM_CONTRACT_LINES_PUB_VW. Active contract means "
+    "INSTALLED_PRODUCT_STATUS = 'ACTIVE' and HARDWARE_SERV_END_DATE > SYSDATE "
+    "on EIM_PR_SYSTEM.\n\n"
+    "Call summarize_party_site_mismatch now. Quote mismatch_serials, "
+    "same_country_serials, different_country_serials, top_cross_country, and "
+    "top_site_pairs from that result. Country is already looked up from CDM."
+)
+
+
+def answer_needs_party_site_summary(answer: str) -> bool:
+    """Whether an answer gave up on the End Customer versus Installed At site count."""
+    if not re.search(r"end customer|installed at", answer or "", re.IGNORECASE):
+        return False
+    return bool(
+        re.search(
+            r"timed out|timeout|cannot give you any counts|compare_onprem_and_atp_data",
+            answer,
+            re.IGNORECASE,
+        )
+    )
+
+
 def refuses_cross_database_compare(answer: str) -> bool:
     """Whether an answer declined a cross-database comparison instead of running it."""
     return bool(answer) and bool(_COMPARE_REFUSAL.search(answer))
@@ -321,6 +373,7 @@ def tools_for(
     }
     if service.settings.reconciliation_enabled:
         names.add("compare_onprem_and_atp_data")
+        names.add("summarize_party_site_mismatch")
     specs = [spec for spec in TOOL_SPECS if spec["function"]["name"] in names]
     if collibra is not None:
         specs.extend(collibra.list_tools())
@@ -472,6 +525,7 @@ class ChatAgent:
             "execute_readonly_sql": self._execute,
             "explain_query_result": service.explain_query_result,
             "compare_onprem_and_atp_data": service.compare_onprem_and_atp_data,
+            "summarize_party_site_mismatch": service.summarize_party_site_mismatch,
         }
 
     def _execute(self, **kwargs: Any) -> dict[str, Any]:
@@ -496,6 +550,8 @@ class ChatAgent:
                 "error_code": "UNKNOWN_TOOL",
                 "message": f"{name} is not an available tool on this server.",
             }
+        if name == "compare_onprem_and_atp_data" and _is_party_site_mismatch(arguments.get("onprem_query", "")):
+            return self.service.summarize_party_site_mismatch()
         if name == "compare_onprem_and_atp_data" and not self.service.settings.reconciliation_enabled:
             return {
                 "status": "ERROR",
@@ -552,6 +608,28 @@ class ChatAgent:
                 compared = any(
                     step.get("name") == "compare_onprem_and_atp_data" for step in trace
                 )
+                summarized = any(
+                    step.get("name") == "summarize_party_site_mismatch" for step in trace
+                )
+                if (
+                    not nudged
+                    and self.service.settings.reconciliation_enabled
+                    and not summarized
+                    and answer_needs_party_site_summary(answer)
+                ):
+                    nudged = True
+                    emit({"type": "tool", "name": "party_site_summary_required", "status": "start", "arguments": {}})
+                    messages.append(message)
+                    messages.append({"role": "user", "content": _SITE_MISMATCH_NUDGE})
+                    emit(
+                        {
+                            "type": "tool",
+                            "name": "party_site_summary_required",
+                            "status": "done",
+                            "summary": "Answer missed the On-Prem party-site summary; required summarize_party_site_mismatch.",
+                        }
+                    )
+                    continue
                 if (
                     not nudged
                     and self.service.settings.reconciliation_enabled

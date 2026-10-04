@@ -6,6 +6,8 @@ import httpx
 import pytest
 from oracle_mcp.agent import (
     ChatAgent,
+    _is_party_site_mismatch,
+    answer_needs_party_site_summary,
     asks_instead_of_discovering,
     refuses_cross_database_compare,
     compact_tool_result,
@@ -117,6 +119,66 @@ REFUSAL = (
     "case beyond compare_onprem_and_atp_data (which expects one query per side, "
     "not the cross-join pattern above)."
 )
+
+
+def test_party_site_compare_is_redirected_to_the_summary_tool(service):
+    service.summarize_party_site_mismatch = lambda **kwargs: {
+        "status": "OK",
+        "mismatch_serials": 229403,
+    }
+    agent = ChatAgent(service, llm=None)
+    result = agent.invoke_tool(
+        "compare_onprem_and_atp_data",
+        {
+            "onprem_query": (
+                "SELECT ec.CMAT_SITE_ID FROM EIM.EIM_PR_IB_LATEST ec "
+                "JOIN EIM.EIM_PR_IB_LATEST ia ON ia.ROLE_ID = 10 "
+                "WHERE ec.ROLE_ID = 1 AND ec.CMAT_SITE_ID <> ia.CMAT_SITE_ID"
+            ),
+            "atp_query": "SELECT cmat_address_id FROM napperp.napp_cdm_to_atp_sync",
+            "matching_key": "cmat_address_id",
+            "business_entity": "End Customer vs Installed At",
+        },
+    )
+    assert result["mismatch_serials"] == 229403
+    assert _is_party_site_mismatch("SELECT customer_number FROM customers") is False
+
+
+def test_site_mismatch_timeout_is_sent_back_to_the_summary_tool(service):
+    assert answer_needs_party_site_summary(
+        "The On-Prem side timed out again, so I still cannot give you any counts "
+        "for End Customer versus Installed At."
+    ) is True
+    llm = ScriptedLlm(
+        [
+            {
+                "role": "assistant",
+                "content": (
+                    "The comparison step using compare_onprem_and_atp_data failed "
+                    "because the On-Prem side timed out. I cannot give you any counts "
+                    "for the End Customer and Installed At sites."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "sum",
+                        "function": {"name": "summarize_party_site_mismatch", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "229,403 serials have different sites."},
+        ]
+    )
+    service.summarize_party_site_mismatch = lambda **kwargs: {
+        "status": "OK",
+        "mismatch_serials": 229403,
+    }
+    result = ChatAgent(service, llm).run("how many active serials have different sites?")
+    assert "229,403" in result["answer"]
+    assert result["tools"][0]["name"] == "summarize_party_site_mismatch"
 
 
 def test_cross_database_refusal_is_recognised():

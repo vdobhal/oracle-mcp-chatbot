@@ -79,6 +79,88 @@ def _resolve_key_columns(matching_key: str, rows: Sequence[dict[str, Any]]) -> l
     return requested
 
 
+def summarize_site_mismatch_rows(
+    rows: Sequence[dict[str, Any]],
+    countries: dict[str, dict[str, Any]],
+    *,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Count End Customer versus Installed At site mismatches and attach CDM country.
+
+    ``rows`` come from the On-Prem join. ``countries`` is keyed by address CMAT
+    ID and holds ``country`` and ``company`` from ATP. A site with no CDM row
+    is reported as missing rather than as a country.
+    """
+    same_country = 0
+    different_country = 0
+    missing_cdm = 0
+    country_pairs: dict[tuple[str, str], int] = {}
+    site_pairs: dict[tuple[str, str], int] = {}
+    serials: set[str] = set()
+
+    def label(site: str) -> tuple[str, str]:
+        record = countries.get(site) or {}
+        country = record.get("country")
+        company = record.get("company") or ""
+        if country in (None, ""):
+            return "Not in CDM", company
+        return str(country), str(company)
+
+    for row in rows:
+        serial = _normalize(row.get("SYSTEM_SERIAL_NUMBER"))
+        if serial is not None:
+            serials.add(str(serial))
+        end_site = str(_normalize(row.get("END_CUSTOMER_SITE_ID")) or "")
+        installed_site = str(_normalize(row.get("INSTALLED_AT_SITE_ID")) or "")
+        end_country, end_company = label(end_site)
+        installed_country, installed_company = label(installed_site)
+        if end_country == "Not in CDM" or installed_country == "Not in CDM":
+            missing_cdm += 1
+        elif end_country == installed_country:
+            same_country += 1
+        else:
+            different_country += 1
+        country_key = (end_country, installed_country)
+        country_pairs[country_key] = country_pairs.get(country_key, 0) + 1
+        site_key = (end_site, installed_site, end_company, end_country, installed_company, installed_country)
+        site_pairs[site_key] = site_pairs.get(site_key, 0) + 1
+
+    def country_rows(predicate) -> list[dict[str, Any]]:
+        ranked = sorted(
+            (
+                {"end_customer_country": key[0], "installed_at_country": key[1], "serials": count}
+                for key, count in country_pairs.items()
+                if predicate(key)
+            ),
+            key=lambda item: item["serials"],
+            reverse=True,
+        )
+        return ranked[:limit]
+
+    ranked_sites = sorted(site_pairs.items(), key=lambda item: item[1], reverse=True)[:limit]
+    return {
+        "mismatch_serials": len(serials) if serials else len(rows),
+        "same_country_serials": same_country,
+        "different_country_serials": different_country,
+        "site_missing_from_cdm_serials": missing_cdm,
+        "distinct_site_pairs": len(site_pairs),
+        "top_same_country": country_rows(lambda key: key[0] == key[1] and key[0] != "Not in CDM"),
+        "top_cross_country": country_rows(lambda key: key[0] != key[1]),
+        "top_site_pairs": [
+            {
+                "serials": count,
+                "end_customer_site_id": key[0],
+                "end_customer": key[2],
+                "end_customer_country": key[3],
+                "installed_at_site_id": key[1],
+                "installed_at": key[4],
+                "installed_at_country": key[5],
+            }
+            for key, count in ranked_sites
+        ],
+    }
+
+
 def compare_result_sets(
     *,
     business_entity: str,

@@ -186,7 +186,7 @@ serial-number attribute check. Those columns are on `EIM.EIM_PR_SYSTEM`, and
 | Sales-order history | `EIM.EIM_PR_SN_SO_REF_PUB` | `SYSTEM_SERIAL_NUMBER`, `SALES_ORDER_NUMBER` |
 | Service-contract lines | `EIM.EIM_CONTRACT_LINES_PUB_VW` | `SYSTEM_SERIAL_NUMBER` |
 | Latest party roles for one serial | `EIM.EIM_IB_LATEST_PUB` joined to `EIM.EIM_PR_ROLES` for the role label only | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID` |
-| Party-role site comparison across many serials | `EIM.EIM_PR_IB_LATEST`, joined twice on `SYSTEM_SERIAL_NUMBER` for role 1 and role 10. Drive from `EIM.EIM_PR_SYSTEM` when serial attributes are filtered | `SYSTEM_SERIAL_NUMBER`, `ROLE_ID`, `CMAT_SITE_ID` |
+| How many active serials have a different End Customer site and Installed At site, including country | `summarize_party_site_mismatch` | Do not write this SQL yourself |
 | Company name, NAGP, DP, and address for a party role | On-Prem `EIM_IB_LATEST_PUB` (`CMAT_CUSTOMER_ID`, `CMAT_SITE_ID`), then ATP `NAPPERP.NAPP_CDM_TO_ATP_SYNC` | `CMAT_ID` = `CMAT_CUSTOMER_ID`; `CMAT_ADDRESS_ID` = `CMAT_SITE_ID` |
 | Shelf / drive configuration | `EIM.EIM_CONFIG_DETAIL_VW` | `PRIMARY_SN` |
 | Opportunities | `EIM.EIM_OPPTY_DETAILS_VW`, or `EIM_OPPTY_DETAILS` joined to `EIM_OPPTY_SN_DETAILS` on `OPPTY_ID` | `OPPTY_ID` or `SYSTEM_SERIAL_NUMBER` |
@@ -202,6 +202,15 @@ If a query on `EIM_IB_CONFIG_LATEST_PUB` is slow or times out, stop and rerun
 the same attributes on `EIM.EIM_PR_SYSTEM` filtered by `SYSTEM_SERIAL_NUMBER`.
 Do not start a serial attribute check on the view when the column is on
 `EIM_PR_SYSTEM`.
+
+A question that counts active serials whose End Customer address CMAT ID differs
+from the Installed At site, and asks for CDM country on those sites, is one
+On-Prem comparison plus a country lookup. Call `summarize_party_site_mismatch`
+and quote its counts. Do not call `compare_onprem_and_atp_data`. Do not join
+`EIM_CONTRACT_LINES_PUB_VW`. Active contract means
+`INSTALLED_PRODUCT_STATUS = 'ACTIVE'` and `HARDWARE_SERV_END_DATE > SYSDATE`
+on `EIM.EIM_PR_SYSTEM`. End Customer is role 1 and Installed At is role 10 on
+`EIM.EIM_PR_IB_LATEST`. Country is already included in the tool result.
 
 ## Query performance
 

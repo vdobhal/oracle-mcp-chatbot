@@ -66,6 +66,36 @@ def test_attribute_mismatches_are_detailed():
     }
 
 
+def test_site_mismatch_summary_separates_country_and_company():
+    from oracle_mcp.reconcile import summarize_site_mismatch_rows
+
+    summary = summarize_site_mismatch_rows(
+        [
+            {
+                "SYSTEM_SERIAL_NUMBER": "1",
+                "END_CUSTOMER_SITE_ID": 6715244,
+                "INSTALLED_AT_SITE_ID": "6011358",
+            },
+            {
+                "SYSTEM_SERIAL_NUMBER": "2",
+                "END_CUSTOMER_SITE_ID": "21117580",
+                "INSTALLED_AT_SITE_ID": "17604468",
+            },
+        ],
+        {
+            "6715244": {"country": "JP", "company": "Fujitsu Ltd. (OEM)"},
+            "6011358": {"country": "JP", "company": "Fujitsu IT Products Ltd."},
+            "21117580": {"country": "HK", "company": "Lenovo HK"},
+            "17604468": {"country": "CN", "company": "Lenovo CN"},
+        },
+    )
+    assert summary["mismatch_serials"] == 2
+    assert summary["same_country_serials"] == 1
+    assert summary["different_country_serials"] == 1
+    assert summary["top_site_pairs"][0]["installed_at_site_id"] == "6011358"
+    assert summary["top_cross_country"][0]["end_customer_country"] == "HK"
+
+
 def test_number_and_text_keys_match():
     result = compare_result_sets(
         business_entity="End customer site",
