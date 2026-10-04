@@ -473,12 +473,19 @@ def test_health_and_chat_endpoints(service):
     assert health["collibra_configured"] is True
     assert "validate_sql" in health["tools"]
     assert "search_asset_keyword" in health["tools"]
+    assert health["performance"]["cache"]["enabled"] is True
+
+    metrics = client.get("/api/metrics")
+    assert metrics.status_code == 200
+    assert metrics.json()["cache_hits"] == 0
+    assert "database_ms_average" in metrics.json()
 
     session = client.get("/api/session").json()
     assert session["collibra_configured"] is True
 
     chat = client.post("/api/chat", json={"question": "hello", "history": []})
     assert chat.status_code == 200
+    assert "app;dur=" in chat.headers["server-timing"]
     assert "test double" in chat.json()["answer"]
     page = client.get("/")
     assert page.status_code == 200

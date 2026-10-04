@@ -60,6 +60,33 @@ ATP: OK
 `FAILED` means the network path, credentials or TLS settings need attention; the
 server log line above it carries the Oracle error code.
 
+## Query cache and performance observability
+
+The process has a bounded in-memory TTL cache for validated read results.
+Cache keys include database, effective role, rewritten SQL, bind values, and
+row limit. This prevents results from crossing database or masking boundaries.
+Only already-masked payloads are cached. The cache is process-local and is
+cleared on restart.
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `ORACLE_MCP_QUERY_CACHE_ENABLED` | `true` | Enables query and summary caches |
+| `ORACLE_MCP_QUERY_CACHE_TTL_SECONDS` | `60` | TTL for ordinary query results |
+| `ORACLE_MCP_QUERY_CACHE_MAX_ENTRIES` | `256` | LRU entry ceiling |
+| `ORACLE_MCP_QUERY_CACHE_MAX_ROWS` | `1000` | Excludes large result sets from the generic cache |
+| `ORACLE_MCP_SUMMARY_CACHE_TTL_SECONDS` | `300` | TTL for compact expensive summaries |
+| `ORACLE_MCP_SLOW_QUERY_THRESHOLD_MS` | `5000` | Emits slow-query and slow-HTTP warnings |
+
+`GET /api/metrics` reports cache hits, misses, hit rate, database calls,
+average/max database time, errors, slow queries, and per-database totals. It
+does not expose SQL, bind values, credentials, or result rows. `/api/health`
+also includes the same performance snapshot. Every HTTP response includes a
+`Server-Timing` header with application duration. Chat tool traces include
+`duration_ms` and `cache_hit`, which makes slow steps visible in the UI.
+
+Cache entries do not bypass validation, authorization, or masking. A statement
+must pass the normal guardrails before its cache key is considered.
+
 ---
 
 ## Open items

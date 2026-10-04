@@ -231,6 +231,58 @@ def test_bind_values_are_passed_through_as_parameters(service, onprem_conn):
     assert binds == {"customer_number": "C-1001"}
 
 
+def test_repeated_query_uses_role_aware_cache(service, onprem_conn):
+    validated = approve(service, APPROVED)
+    onprem_conn.set_result(
+        ["CUSTOMER_ID", "CUSTOMER_STATUS"],
+        [{"CUSTOMER_ID": 1, "CUSTOMER_STATUS": "ACTIVE"}],
+    )
+
+    first = service.execute_readonly_sql(
+        "ONPREM", validated["rewritten_safe_sql"], user_role="analyst"
+    )
+    second = service.execute_readonly_sql(
+        "ONPREM", validated["rewritten_safe_sql"], user_role="analyst"
+    )
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+    assert len(onprem_conn.executed) == 1
+    metrics = service.performance_snapshot()
+    assert metrics["cache_hits"] == 1
+    assert metrics["cache_misses"] == 1
+    assert metrics["database_calls"] == 1
+
+
+def test_query_cache_is_isolated_by_role_and_bind_values(service, onprem_conn):
+    sql = f"{APPROVED} WHERE customer_number = :customer_number"
+    validated = approve(service, sql)
+    onprem_conn.set_result(["CUSTOMER_ID"], [{"CUSTOMER_ID": 1}])
+
+    service.execute_readonly_sql(
+        "ONPREM",
+        validated["rewritten_safe_sql"],
+        user_role="analyst",
+        bind_parameters={"customer_number": "C-1001"},
+    )
+    # A different bind is a different cache entry.
+    service.execute_readonly_sql(
+        "ONPREM",
+        validated["rewritten_safe_sql"],
+        user_role="analyst",
+        bind_parameters={"customer_number": "C-1002"},
+    )
+    # Admin has a different masking/security boundary.
+    service.execute_readonly_sql(
+        "ONPREM",
+        validated["rewritten_safe_sql"],
+        user_role="admin",
+        bind_parameters={"customer_number": "C-1001"},
+    )
+
+    assert len(onprem_conn.executed) == 3
+
+
 def test_unknown_database_is_reported_cleanly(service):
     payload = service.execute_readonly_sql("WAREHOUSE", APPROVED, user_role="admin")
     assert payload["status"] == "ERROR"

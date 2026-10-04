@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -674,10 +675,34 @@ class ChatAgent:
                 except json.JSONDecodeError:
                     arguments = {}
                 emit({"type": "tool", "name": name, "status": "start", "arguments": arguments})
+                tool_started = time.perf_counter()
                 result = self.invoke_tool(name, arguments)
+                duration_ms = round((time.perf_counter() - tool_started) * 1000, 1)
                 summary = summarise_tool_result(name, result if isinstance(result, dict) else {})
-                trace.append({"name": name, "arguments": arguments, "summary": summary})
-                emit({"type": "tool", "name": name, "status": "done", "summary": summary})
+                cache_hit = (
+                    result.get("cache_hit")
+                    if isinstance(result, dict)
+                    else None
+                )
+                trace.append(
+                    {
+                        "name": name,
+                        "arguments": arguments,
+                        "summary": summary,
+                        "duration_ms": duration_ms,
+                        "cache_hit": cache_hit,
+                    }
+                )
+                emit(
+                    {
+                        "type": "tool",
+                        "name": name,
+                        "status": "done",
+                        "summary": summary,
+                        "duration_ms": duration_ms,
+                        "cache_hit": cache_hit,
+                    }
+                )
                 messages.append(
                     {
                         "role": "tool",

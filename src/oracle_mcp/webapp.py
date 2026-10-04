@@ -11,10 +11,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -102,6 +103,24 @@ def create_app(
     app.state.agent = agent
     app.state.settings = settings
 
+    @app.middleware("http")
+    async def response_timing(request: Request, call_next):
+        started = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+        if (
+            settings.slow_query_threshold_ms > 0
+            and elapsed_ms >= settings.slow_query_threshold_ms
+        ):
+            logger.warning(
+                "Slow HTTP request method=%s path=%s elapsed_ms=%.1f",
+                request.method,
+                request.url.path,
+                elapsed_ms,
+            )
+        return response
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         databases = []
@@ -120,7 +139,13 @@ def create_app(
             "databases": databases,
             "reconciliation": settings.reconciliation_enabled,
             "tools": [t["function"]["name"] for t in tools_for(service, agent.collibra)],
+            "performance": service.performance_snapshot(),
         }
+
+    @app.get("/api/metrics")
+    def metrics() -> dict[str, Any]:
+        """Safe process metrics: no SQL text, bind values, or result rows."""
+        return service.performance_snapshot()
 
     @app.get("/api/session")
     def session() -> dict[str, Any]:

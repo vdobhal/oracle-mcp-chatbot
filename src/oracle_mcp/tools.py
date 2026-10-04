@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 import re
 import time
+import hashlib
+import json
 from collections import OrderedDict
 from typing import Any
 
@@ -37,6 +39,7 @@ from .explain import (
 )
 from .masking import Masker
 from .metadata import DataDictionary, MetadataService
+from .performance import PerformanceMetrics, TtlCache
 from .policy import PolicyStore, Role
 import sqlglot
 from sqlglot import exp
@@ -88,6 +91,30 @@ def _without_row_limit(sql: str) -> str:
     tree = sqlglot.parse_one(sql, dialect="oracle")
     tree.set("limit", None)
     return tree.sql(dialect="oracle")
+
+
+def _result_cache_key(
+    database_name: str,
+    role_name: str,
+    sql: str,
+    binds: dict[str, Any],
+    row_limit: int,
+) -> str:
+    """Hash query identity without retaining SQL or bind values in cache metadata."""
+    canonical = json.dumps(
+        {
+            "database": database_name.upper(),
+            "role": role_name.lower(),
+            "sql": sql,
+            "binds": binds,
+            "row_limit": row_limit,
+        },
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 _APPROVAL_TTL_SECONDS = 900
 _APPROVAL_CACHE_SIZE = 256
@@ -150,6 +177,17 @@ class ToolService:
             allow_cartesian=settings.allow_cartesian,
         )
         self.approvals = ApprovalCache()
+        self.query_cache = TtlCache(
+            enabled=settings.query_cache_enabled,
+            ttl_seconds=settings.query_cache_ttl_seconds,
+            max_entries=settings.query_cache_max_entries,
+        )
+        self.summary_cache = TtlCache(
+            enabled=settings.query_cache_enabled,
+            ttl_seconds=settings.summary_cache_ttl_seconds,
+            max_entries=max(1, min(settings.query_cache_max_entries, 64)),
+        )
+        self.metrics = PerformanceMetrics()
 
     # ---- identity ----------------------------------------------------------
 
@@ -173,6 +211,25 @@ class ToolService:
 
     def _fail(self, exc: ChatbotError, request_id: str) -> dict[str, Any]:
         return {"request_id": request_id, **exc.to_dict()}
+
+    def performance_snapshot(self) -> dict[str, Any]:
+        """Process-local cache and query metrics; contains no SQL or row data."""
+        snapshot = self.metrics.snapshot(
+            cache_entries=self.query_cache.size() + self.summary_cache.size()
+        )
+        snapshot["cache"] = {
+            "enabled": self.settings.query_cache_enabled,
+            "query_ttl_seconds": self.settings.query_cache_ttl_seconds,
+            "summary_ttl_seconds": self.settings.summary_cache_ttl_seconds,
+            "max_entries": self.settings.query_cache_max_entries,
+            "max_rows_per_entry": self.settings.query_cache_max_rows,
+        }
+        snapshot["slow_query_threshold_ms"] = self.settings.slow_query_threshold_ms
+        return snapshot
+
+    def clear_performance_cache(self) -> None:
+        self.query_cache.clear()
+        self.summary_cache.clear()
 
     # ---- tool 0: connection discovery --------------------------------------
 
@@ -431,9 +488,39 @@ class ToolService:
                 role, self.settings.max_rows
             )
 
-        columns, rows, truncated, elapsed_ms = connection.fetch(
-            sql, binds, max_rows=row_limit, timeout_seconds=timeout_seconds
+        cache_key = _result_cache_key(
+            database_name, role.name, sql, binds, row_limit
         )
+        cached, cache_age = self.query_cache.get(cache_key)
+        if cached is not None:
+            self.metrics.cache_hit(database_name)
+            cached["cache_hit"] = True
+            cached["cache_age_seconds"] = round(cache_age, 1)
+            cached["response_ms"] = 0.0
+            return cached
+
+        self.metrics.cache_miss(database_name)
+        try:
+            columns, rows, truncated, elapsed_ms = connection.fetch(
+                sql, binds, max_rows=row_limit, timeout_seconds=timeout_seconds
+            )
+        except ChatbotError:
+            self.metrics.query_error(database_name)
+            raise
+
+        slow = (
+            self.settings.slow_query_threshold_ms > 0
+            and elapsed_ms >= self.settings.slow_query_threshold_ms
+        )
+        self.metrics.database_query(database_name, elapsed_ms, slow=slow)
+        if slow:
+            logger.warning(
+                "Slow query database=%s elapsed_ms=%.1f objects=%s rows=%d",
+                database_name.upper(),
+                elapsed_ms,
+                ",".join(result.referenced_objects),
+                len(rows),
+            )
 
         object_policy = None
         if len(result.referenced_objects) == 1:
@@ -462,7 +549,7 @@ class ToolService:
                 f"{len(report.masked_columns)} column(s) were masked for role '{role.name}'."
             )
 
-        return {
+        payload = {
             "database_source": self.registry.get(database_name).profile.display_name,
             "database": database_name.upper(),
             "columns": columns,
@@ -477,7 +564,16 @@ class ToolService:
             "sql_executed": sql,
             "sql_visible_to_role": role.show_sql,
             "warnings": warnings,
+            "cache_hit": False,
+            "cache_age_seconds": 0.0,
+            "response_ms": round(elapsed_ms, 1),
         }
+        if (
+            self.settings.query_cache_max_rows > 0
+            and len(masked_rows) <= self.settings.query_cache_max_rows
+        ):
+            self.query_cache.set(cache_key, payload)
+        return payload
 
     def _check_binds(
         self, result: ValidationResult, bind_parameters: dict[str, Any] | None
@@ -560,6 +656,27 @@ class ToolService:
         role: Role | None = None
         try:
             role, resolved_user = self._identity(user_role)
+            summary_key = f"party-site-mismatch:{role.name.lower()}"
+            cached, cache_age = self.summary_cache.get(summary_key)
+            if cached is not None:
+                self.metrics.cache_hit("ONPREM+ATP")
+                cached["cache_hit"] = True
+                cached["cache_age_seconds"] = round(cache_age, 1)
+                self._audit(
+                    request_id,
+                    "summarize_party_site_mismatch",
+                    "ONPREM+ATP",
+                    resolved_user,
+                    role,
+                    "SUCCESS",
+                    row_count=cached["mismatch_serials"],
+                    response_summary=(
+                        f"cache_hit mismatch_serials={cached['mismatch_serials']}"
+                    ),
+                )
+                return self._ok(cached, request_id)
+
+            self.metrics.cache_miss("ONPREM+ATP")
             population_sql = """
                 SELECT COUNT(*) AS active_contract_serials
                 FROM eim.eim_pr_system
@@ -608,8 +725,11 @@ class ToolService:
                         "NAPPERP.NAPP_CDM_TO_ATP_SYNC matched by CMAT_ADDRESS_ID."
                     ),
                     "truncated": mismatches["truncated"],
+                    "cache_hit": False,
+                    "cache_age_seconds": 0.0,
                 }
             )
+            self.summary_cache.set(summary_key, summary)
             self._audit(
                 request_id, "summarize_party_site_mismatch", "ONPREM+ATP", resolved_user, role,
                 "SUCCESS",

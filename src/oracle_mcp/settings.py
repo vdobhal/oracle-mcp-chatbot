@@ -214,6 +214,14 @@ class Settings(BaseSettings):
     # Optional EXPLAIN PLAN pre-flight. 0 disables it. Requires the read-only
     # user to have a PLAN_TABLE available.
     max_plan_cost: int = Field(default=0, ge=0)
+    query_cache_enabled: bool = True
+    query_cache_ttl_seconds: int = Field(default=60, ge=0, le=3600)
+    query_cache_max_entries: int = Field(default=256, ge=0, le=10_000)
+    # Large reconciliation extracts are deliberately excluded from the generic
+    # row cache. Their compact final summary is cached separately.
+    query_cache_max_rows: int = Field(default=1000, ge=0, le=10_000)
+    summary_cache_ttl_seconds: int = Field(default=300, ge=0, le=3600)
+    slow_query_threshold_ms: int = Field(default=5000, ge=0, le=600_000)
 
     role_binding_mode: Literal["env", "argument"] = "env"
     pinned_role: str = "business_user"
