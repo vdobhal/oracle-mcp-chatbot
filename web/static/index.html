@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MDM (CDM, IB, Collibra) Data Assistent</title>
-  <link rel="stylesheet" href="/static/app.css?v=2" />
+  <title>MDM (CDM, IB, Collibra, ServiceNow) Data Assistent</title>
+  <link rel="stylesheet" href="/static/app.css?v=3" />
 </head>
 <body>
   <aside class="rail">
     <div class="brand">
       <span class="mark">MDM</span>
       <div>
-        <h1>MDM (CDM, IB, Collibra) Data Assistent</h1>
-        <p>Read-only CDM, IB & Collibra</p>
+        <h1>MDM (CDM, IB, Collibra, ServiceNow) Data Assistent</h1>
+        <p>Read-only CDM, IB, Collibra & ServiceNow</p>
       </div>
     </div>
     <button type="button" id="new-chat">New conversation</button>
@@ -35,6 +35,7 @@
       <span id="health-pill" class="pill">Connecting…</span>
       <span id="llm-pill" class="pill">Model</span>
       <span id="collibra-pill" class="pill" style="display:none">Collibra</span>
+      <span id="servicenow-pill" class="pill" style="display:none">ServiceNow</span>
     </header>
     <div id="log" class="log"></div>
     <form id="composer">
@@ -42,6 +43,6 @@
       <button type="submit">Ask</button>
     </form>
   </main>
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>

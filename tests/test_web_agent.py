@@ -10,12 +10,14 @@ from oracle_mcp.agent import (
     answer_needs_party_site_summary,
     answer_needs_variant_site_summary,
     asks_instead_of_discovering,
+    question_needs_servicenow,
     question_needs_variant_site_summary,
     refuses_cross_database_compare,
     compact_tool_result,
     tools_for,
 )
 from oracle_mcp.collibra import CollibraClient
+from oracle_mcp.servicenow import ServiceNowClient
 from oracle_mcp.webapp import create_app
 
 
@@ -420,6 +422,126 @@ def test_collibra_tools_advertised_when_client_configured(service):
     assert "validate_sql" in names
 
 
+def test_servicenow_tools_are_advertised_and_identity_runs_first(service, monkeypatch):
+    assert question_needs_servicenow("show open ticket details for EIM") is True
+    assert question_needs_servicenow("analyze open CDM incidents") is True
+    assert question_needs_servicenow("how many active serials are decommissioned?") is False
+    assert question_needs_servicenow("open incidents for payroll") is False
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append(json["params"]["name"])
+        assert headers.get("Authorization") == "Bearer snow-token"
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            '{"response": {"result": [{"number": "INC1"}]}}'
+                            if json["params"]["name"] == "servicenow_query_table"
+                            else '{"authenticatedUser": {"userName": "vdobhal"}}'
+                        ),
+                    }
+                ]
+            },
+        }
+        return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = ServiceNowClient(url="https://example.com/servicenow", api_key="snow-token")
+    names = {t["function"]["name"] for t in tools_for(service, servicenow=client)}
+    assert "servicenow_query_table" in names
+    result = client.invoke_tool(
+        "servicenow_query_table",
+        {"table": "incident", "query": "active=true", "limit": 500},
+    )
+    assert calls == ["servicenow_get_authenticated_user", "servicenow_query_table"]
+    assert result["response"]["result"][0]["number"] == "INC1"
+    denied = client.invoke_tool("servicenow_delete_record", {"table": "incident", "sysId": "a" * 32})
+    assert denied["error_code"] == "READONLY"
+
+
+def test_mdm_incident_analysis_splits_cdm_and_eim():
+    from oracle_mcp.servicenow import MDM_INCIDENT_GROUPS, analyze_mdm_incidents
+
+    summary = analyze_mdm_incidents(
+        [
+            {
+                "number": "INC1",
+                "assignment_group": MDM_INCIDENT_GROUPS["CDM"]["sys_id"],
+                "state": "2",
+                "priority": "3",
+                "assigned_to": "u1",
+                "short_description": "CDM address sync",
+                "opened_at": "2026-10-01",
+                "sys_updated_on": "2026-10-02",
+                "sys_id": "a" * 32,
+            },
+            {
+                "number": "INC2",
+                "assignment_group": MDM_INCIDENT_GROUPS["EIM"]["sys_id"],
+                "state": "6",
+                "priority": "4",
+                "assigned_to": "",
+                "short_description": "EIM site mismatch",
+                "opened_at": "2026-09-01",
+                "sys_updated_on": "2026-09-02",
+                "sys_id": "b" * 32,
+            },
+        ],
+        [{"sys_id": "u1", "name": "Ada"}],
+        scope="mdm",
+    )
+    assert summary["groups"] == ["IT > MDM > CDM", "IT > MDM > EIM"]
+    assert summary["active_incidents"] == 2
+    assert summary["working_incidents"] == 1
+    assert summary["resolved_still_active"] == 1
+    assert summary["by_group"] == {"CDM": 1, "EIM": 1}
+    assert summary["incidents"][0]["assigned_to"] == "Ada"
+    assert summary["incidents"][1]["assigned_to"] == "Unassigned"
+
+
+def test_mdm_ticket_answer_without_servicenow_is_sent_back(service):
+    llm = ScriptedLlm(
+        [
+            {"role": "assistant", "content": "I cannot see ServiceNow tickets from Oracle."},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "sn",
+                        "function": {
+                            "name": "summarize_mdm_incidents",
+                            "arguments": "{\"scope\": \"mdm\"}",
+                        },
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "CDM has 18 active incidents and EIM has 36."},
+        ]
+    )
+    client = ServiceNowClient(url="https://example.com/servicenow", api_key="snow-token")
+    client.invoke_tool = lambda name, arguments=None: {
+        "status": "OK",
+        "active_incidents": 54,
+        "working_incidents": 30,
+    }
+    agent = ChatAgent(service, llm, servicenow=client)
+    result = agent.run("analyze open incidents for MDM, both CDM and EIM")
+    assert "CDM has 18" in result["answer"]
+    assert result["tools"][0]["name"] == "summarize_mdm_incidents"
+
+
+def test_servicenow_tool_without_configured_client_returns_helpful_error(service):
+    agent = ChatAgent(service, llm=None, servicenow=None)
+    result = agent.invoke_tool("servicenow_query_table", {"table": "incident"})
+    assert result["error_code"] == "SERVICENOW_NOT_CONFIGURED"
+
+
 def test_collibra_tool_without_configured_client_returns_helpful_error(service):
     agent = ChatAgent(service, llm=None, collibra=None)
     result = agent.invoke_tool("search_asset_keyword", {"query": "customer"})
@@ -600,7 +722,7 @@ def test_health_and_chat_endpoints(service):
     assert "test double" in chat.json()["answer"]
     page = client.get("/")
     assert page.status_code == 200
-    assert b"MDM (CDM, IB, Collibra) Data Assistent" in page.content
+    assert b"MDM (CDM, IB, Collibra, ServiceNow) Data Assistent" in page.content
 
 
 def test_collibra_parameter_normalization_and_prepare_create_asset(monkeypatch):

@@ -63,6 +63,12 @@
       "headers": {}
     },
 
+    "servicenow": {
+      "_comment": "ServiceNow via NetApp AI Gateway. Read-only ticket lookup for MDM and EIM. Same gateway bearer as Collibra when the header is required.",
+      "url": "https://netaigateway.netapp.com/api/llm/netaiconnect/mcp/servicenow/server",
+      "headers": {}
+    },
+
     "_oracle-reconciliation": {
       "_comment": "Remove the leading underscore to enable. This server holds BOTH credential sets and exposes compare_onprem_and_atp_data. Restrict to users who need reconciliation.",
       "command": "/absolute/path/to/oracle-mcp-chatbot/.venv/bin/python",

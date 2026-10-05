@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from .collibra import COLLIBRA_TOOL_NAMES, CollibraClient
+from .servicenow import SERVICENOW_TOOL_NAMES, ServiceNowClient
 from .tools import ToolService
 
 logger = logging.getLogger(__name__)
@@ -425,9 +426,29 @@ def load_system_prompt() -> str:
     )
 
 
+def question_needs_servicenow(question: str) -> bool:
+    """Whether the user asked for MDM, CDM, or EIM incident details or analysis."""
+    text = question or ""
+    domain = re.search(r"\bmdm\b|\bcdm\b|\beim\b", text, re.IGNORECASE)
+    incidents = re.search(r"ticket|incident|servicenow|service now", text, re.IGNORECASE)
+    return bool(domain and incidents)
+
+
+_SERVICENOW_NUDGE = (
+    "This is a ServiceNow incident question for MDM. MDM means CDM and EIM. "
+    "Do not answer from memory and do not query Oracle.\n\n"
+    "Call summarize_mdm_incidents. Use scope mdm unless the question names "
+    "only CDM or only EIM. Quote active_incidents, working_incidents, "
+    "resolved_still_active, by_group, by_state, by_priority, by_assignee, "
+    "and the incident short descriptions. Keep CDM and EIM separate in the "
+    "analysis. State 6 is resolved but still active until the incident is closed."
+)
+
+
 def tools_for(
     service: ToolService,
     collibra: CollibraClient | None = None,
+    servicenow: ServiceNowClient | None = None,
 ) -> list[dict[str, Any]]:
     names = {
         "list_databases",
@@ -446,6 +467,8 @@ def tools_for(
     specs = [spec for spec in TOOL_SPECS if spec["function"]["name"] in names]
     if collibra is not None:
         specs.extend(collibra.list_tools())
+    if servicenow is not None:
+        specs.extend(servicenow.list_tools())
     return specs
 
 
@@ -509,6 +532,17 @@ def summarise_tool_result(name: str, payload: dict[str, Any]) -> str:
         if isinstance(types, list):
             return f"Found {len(types)} asset type(s)"
         return str(status)
+    if name == "summarize_mdm_incidents":
+        return (
+            f"{status}: {payload.get('active_incidents', 0)} active MDM incident(s), "
+            f"{payload.get('working_incidents', 0)} still being worked"
+        )
+    if name == "servicenow_query_table":
+        rows = ((payload.get("response") or {}).get("result") if isinstance(payload.get("response"), dict) else None)
+        if isinstance(rows, list):
+            return f"{status}: {len(rows)} ServiceNow row(s)"
+    if name == "servicenow_aggregate_table":
+        return f"{status}: ServiceNow aggregate"
     return str(status)
 
 
@@ -580,10 +614,12 @@ class ChatAgent:
         service: ToolService,
         llm: ChatLlm | None,
         collibra: CollibraClient | None = None,
+        servicenow: ServiceNowClient | None = None,
     ) -> None:
         self.service = service
         self.llm = llm
         self.collibra = collibra
+        self.servicenow = servicenow
         self._dispatch: dict[str, Callable[..., dict[str, Any]]] = {
             "list_databases": lambda **_: service.list_databases(),
             "list_allowed_schemas": service.list_allowed_schemas,
@@ -604,6 +640,14 @@ class ChatAgent:
         return self.service.execute_readonly_sql(**kwargs)
 
     def invoke_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name in SERVICENOW_TOOL_NAMES or name.startswith("servicenow_"):
+            if self.servicenow is None:
+                return {
+                    "status": "ERROR",
+                    "error_code": "SERVICENOW_NOT_CONFIGURED",
+                    "message": "ServiceNow MCP client is not configured. Enable SERVICENOW_MCP_ENABLED in .env.",
+                }
+            return self.servicenow.invoke_tool(name, arguments)
         if name in COLLIBRA_TOOL_NAMES or (self.collibra and name in {t["function"]["name"] for t in self.collibra.list_tools()}):
             if self.collibra is None:
                 return {
@@ -661,7 +705,7 @@ class ChatAgent:
             if on_event is not None:
                 on_event(event)
 
-        tools = tools_for(self.service, self.collibra)
+        tools = tools_for(self.service, self.collibra, self.servicenow)
         messages: list[dict[str, Any]] = [{"role": "system", "content": load_system_prompt()}]
         for turn in history or []:
             role = turn.get("role")
@@ -691,6 +735,28 @@ class ChatAgent:
                 variant_counted = any(
                     step.get("name") == "summarize_end_customer_variant_sites" for step in trace
                 )
+                servicenow_called = any(
+                    str(step.get("name") or "").startswith("servicenow_") for step in trace
+                )
+                if (
+                    not nudged
+                    and self.servicenow is not None
+                    and not servicenow_called
+                    and question_needs_servicenow(question)
+                ):
+                    nudged = True
+                    emit({"type": "tool", "name": "servicenow_required", "status": "start", "arguments": {}})
+                    messages.append(message)
+                    messages.append({"role": "user", "content": _SERVICENOW_NUDGE})
+                    emit(
+                        {
+                            "type": "tool",
+                            "name": "servicenow_required",
+                            "status": "done",
+                            "summary": "Answer missed ServiceNow; required a ServiceNow ticket query.",
+                        }
+                    )
+                    continue
                 if (
                     not nudged
                     and self.service.settings.reconciliation_enabled

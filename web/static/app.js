@@ -134,7 +134,7 @@ function welcome(session) {
   logEl.innerHTML = "";
   const intro = addBubble(
     "assistant",
-    "Ask a business question about CDM, Install Base (IB), or Collibra governance. I will validate every SELECT against approved MDM objects, search the Collibra catalog when needed, and cite the exact data source.\n\nIf a number is not in a tool result, I will not invent it."
+    "Ask a business question about CDM, Install Base (IB), Collibra governance, or ServiceNow tickets for MDM. I will validate every SELECT against approved MDM objects, search Collibra or ServiceNow when needed, and cite the exact data source.\n\nIf a number is not in a tool result, I will not invent it."
   );
   const row = el("<div class='suggestions'></div>");
   for (const s of session.suggestions || []) {
@@ -186,6 +186,16 @@ function fillSession(session, health) {
       cp.style.display = "";
     } else {
       cp.style.display = "none";
+    }
+  }
+  const sp = document.getElementById("servicenow-pill");
+  if (sp) {
+    if (health.servicenow_configured) {
+      sp.textContent = "ServiceNow connected";
+      sp.className = "pill ok";
+      sp.style.display = "";
+    } else {
+      sp.style.display = "none";
     }
   }
 }

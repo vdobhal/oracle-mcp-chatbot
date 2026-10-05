@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from .agent import ChatAgent, ChatLlm, LlmError, iter_sse, tools_for
 from .collibra import CollibraClient, DEFAULT_COLLIBRA_URL
+from .servicenow import DEFAULT_SERVICENOW_URL, ServiceNowClient
 from .server import build_service, configure_logging
 from .settings import Settings, get_settings
 
@@ -57,6 +58,31 @@ def collibra_from_env() -> CollibraClient | None:
             pass
 
     return CollibraClient(url=url, api_key=api_key, timeout_seconds=timeout)
+
+
+def servicenow_from_env() -> ServiceNowClient | None:
+    raw_enabled = _env("SERVICENOW_MCP_ENABLED")
+    url = _env("SERVICENOW_MCP_URL", DEFAULT_SERVICENOW_URL)
+    api_key = _env("SERVICENOW_MCP_API_KEY") or _env("CHAT_LLM_API_KEY")
+
+    enabled = False
+    if raw_enabled:
+        enabled = raw_enabled.lower() in {"1", "true", "yes", "on"}
+    elif url and api_key:
+        enabled = True
+
+    if not enabled or not url:
+        return None
+
+    timeout = 60.0
+    raw_timeout = _env("SERVICENOW_MCP_TIMEOUT_SECONDS")
+    if raw_timeout:
+        try:
+            timeout = float(raw_timeout)
+        except ValueError:
+            pass
+
+    return ServiceNowClient(url=url, api_key=api_key, timeout_seconds=timeout)
 
 
 def llm_from_env() -> ChatLlm | None:
@@ -97,8 +123,13 @@ def create_app(
 ) -> FastAPI:
     settings = settings or get_settings()
     service = service or build_service(settings)
-    agent = agent or ChatAgent(service, llm_from_env(), collibra=collibra_from_env())
-    app = FastAPI(title="MDM (CDM, IB, Collibra) Data Assistent", docs_url=None, redoc_url=None)
+    agent = agent or ChatAgent(
+        service,
+        llm_from_env(),
+        collibra=collibra_from_env(),
+        servicenow=servicenow_from_env(),
+    )
+    app = FastAPI(title="MDM (CDM, IB, Collibra, ServiceNow) Data Assistent", docs_url=None, redoc_url=None)
     app.state.service = service
     app.state.agent = agent
     app.state.settings = settings
@@ -134,11 +165,15 @@ def create_app(
             "ok": True,
             "llm_configured": agent.llm is not None,
             "collibra_configured": agent.collibra is not None,
+            "servicenow_configured": agent.servicenow is not None,
             "profile": settings.profile,
             "role": settings.pinned_role,
             "databases": databases,
             "reconciliation": settings.reconciliation_enabled,
-            "tools": [t["function"]["name"] for t in tools_for(service, agent.collibra)],
+            "tools": [
+                t["function"]["name"]
+                for t in tools_for(service, agent.collibra, agent.servicenow)
+            ],
             "performance": service.performance_snapshot(),
         }
 
@@ -159,6 +194,8 @@ def create_app(
         ]
         if agent.collibra is not None:
             suggestions.append("Check Collibra for IB Attributes domain location and assets.")
+        if agent.servicenow is not None:
+            suggestions.append("Analyze open ServiceNow incidents for MDM (CDM and EIM).")
         return {
             "role": role.name,
             "clearance": role.clearance,
@@ -166,6 +203,7 @@ def create_app(
             "user_id": settings.pinned_user_id,
             "llm_configured": agent.llm is not None,
             "collibra_configured": agent.collibra is not None,
+            "servicenow_configured": agent.servicenow is not None,
             "databases": service.registry.public_metadata(),
             "suggestions": suggestions,
         }
@@ -215,7 +253,7 @@ app = create_app()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="MDM (CDM, IB, Collibra) Data Assistent chat UI")
+    parser = argparse.ArgumentParser(description="MDM (CDM, IB, Collibra, ServiceNow) Data Assistent chat UI")
     parser.add_argument("--profile", choices=["onprem", "atp", "both"])
     parser.add_argument("--host", default="")
     parser.add_argument("--port", type=int, default=0)
