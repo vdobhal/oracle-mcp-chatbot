@@ -313,6 +313,7 @@ class ServiceNowClient:
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self._session_id = ""
+        self._initialized = False
         self._identity_ready = False
 
     def list_tools(self) -> list[dict[str, Any]]:
@@ -391,19 +392,54 @@ class ServiceNowClient:
             headers["Mcp-Session-Id"] = self._session_id
         return headers
 
+    def _ensure_initialized(self) -> dict[str, Any] | None:
+        """Open an MCP session before the first tool call.
+
+        ServiceNow rejects tools/call with "Server not initialized" until the
+        client sends initialize and notifications/initialized on that session.
+        """
+        if self._initialized:
+            return None
+        started = self._post(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "mdm-data-assistant", "version": "1.0.0"},
+                },
+            }
+        )
+        if started.get("status") == "ERROR":
+            return started
+        confirmed = self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        if confirmed.get("status") == "ERROR":
+            return confirmed
+        self._initialized = True
+        return None
+
     def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        pending = self._ensure_initialized()
+        if pending is not None:
+            return pending
         if name == "servicenow_query_table":
             limit = arguments.get("limit")
             try:
                 arguments["limit"] = min(int(limit), _MAX_ROWS) if limit else 50
             except (TypeError, ValueError):
                 arguments["limit"] = 50
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        }
+        return self._post(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        )
+
+    def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = httpx.post(
                 self.url,
@@ -420,6 +456,8 @@ class ServiceNowClient:
         session_id = response.headers.get("mcp-session-id") or response.headers.get("Mcp-Session-Id")
         if session_id:
             self._session_id = session_id
+        if payload.get("method") == "notifications/initialized" and response.status_code < 400:
+            return {"status": "OK"}
         if response.status_code == 401:
             return {
                 "status": "ERROR",

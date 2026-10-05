@@ -430,8 +430,24 @@ def test_servicenow_tools_are_advertised_and_identity_runs_first(service, monkey
     calls = []
 
     def fake_post(url, headers, json, timeout):
-        calls.append(json["params"]["name"])
+        method = json.get("method")
+        calls.append(json["params"]["name"] if method == "tools/call" else method)
         assert headers.get("Authorization") == "Bearer snow-token"
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                },
+                headers={"mcp-session-id": "session-1"},
+                request=httpx.Request("POST", url),
+            )
+        if method == "notifications/initialized":
+            assert headers.get("Mcp-Session-Id") == "session-1"
+            return httpx.Response(202, text="", request=httpx.Request("POST", url))
+        assert headers.get("Mcp-Session-Id") == "session-1"
         body = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -458,7 +474,12 @@ def test_servicenow_tools_are_advertised_and_identity_runs_first(service, monkey
         "servicenow_query_table",
         {"table": "incident", "query": "active=true", "limit": 500},
     )
-    assert calls == ["servicenow_get_authenticated_user", "servicenow_query_table"]
+    assert calls == [
+        "initialize",
+        "notifications/initialized",
+        "servicenow_get_authenticated_user",
+        "servicenow_query_table",
+    ]
     assert result["response"]["result"][0]["number"] == "INC1"
     denied = client.invoke_tool("servicenow_delete_record", {"table": "incident", "sysId": "a" * 32})
     assert denied["error_code"] == "READONLY"
